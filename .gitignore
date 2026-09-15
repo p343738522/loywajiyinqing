@@ -1,0 +1,12 @@
+.vs/
+.vscode/
+*.user
+*.log
+*.tmp
+**/bin/
+**/obj/
+**/Build/
+**/artifacts/
+**/publish/
+*.pdb
+.git

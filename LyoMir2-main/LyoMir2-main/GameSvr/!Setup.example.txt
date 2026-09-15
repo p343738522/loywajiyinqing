@@ -1,0 +1,34 @@
+; 最小 !Setup.txt 示例。复制到 GameSvr 进程目录并改名为 !Setup.txt。
+; 编码建议 GBK。不要指望本文件提供 Envir/Map；不要把战神整包拷进 git。
+; 已核实数据根（传奇1.85纯净版 Mir200，含 Envir\MapInfo.txt、Map\、Share\、Gs1\!Setup.txt）：
+;   F:\BaiduNetdiskDownload\战神引擎包(1)\战神引擎包\4.版本库\传奇1.85纯净版\Mir200
+; 启动前请设环境变量（PowerShell）：
+;   $env:LYOMIR_ROOT="F:\BaiduNetdiskDownload\战神引擎包(1)\战神引擎包\4.版本库\传奇1.85纯净版\Mir200"
+; [Share] 相对路径由 NativeStartupPreflight 解析到 LYOMIR_ROOT 下。
+; Gs1 出生点按该包 Gs1\!Setup.txt：HomeMap=0 HomeX=289 HomeY=618。
+
+[Server]
+ServerIndex=0
+ServerName=LyoMir2
+DBAddr=127.0.0.1
+DBPort=6000
+
+[Share]
+BaseDir=./Share/
+EnvirDir=./Envir/
+MapDir=./Map/
+NoticeDir=./Notice/
+
+[Setup]
+HomeMap=0
+HomeX=289
+HomeY=618
+
+[GameGate]
+GateAddr=127.0.0.1
+GatePort=5000
+
+[DataBase]
+IDSAddr=127.0.0.1
+IDSPort=5600
+ConnString=server=127.0.0.1;uid=root;pwd=;database=mir3;charset=gbk;

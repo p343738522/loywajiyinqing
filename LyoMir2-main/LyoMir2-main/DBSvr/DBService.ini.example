@@ -1,0 +1,33 @@
+; Copy to DBService.ini next to DBSvr.exe. Encoding GBK.
+; ServerName must match LoginGate.ini group1DBS. Native 1.85 pack = 收复台湾.
+; LoginGate Port=5600 is LoginGate DBServerListen (uDBListen.pas).
+; GameGate1 7100 matches native MirGate.ini / 本仓 MirGate.ini.example.
+; MapInfoFile 指向原包 Mir200，不要把整包拷进 git。Ticket 仍由 LoginGate TicketDb fail-closed。
+
+[Setup]
+ZoneName=180区
+ServerName=收复台湾
+ZoneIdx=180
+GroupIdx=1
+MapInfoFile=F:\BaiduNetdiskDownload\战神引擎包(1)\战神引擎包\4.版本库\传奇1.85纯净版\Mir200\Envir\MapInfo.txt
+MaxSingleIpHumanCount=100
+DBPassword=CHANGE_ME
+DBBackupPassword=CHANGE_ME
+
+[Server]
+IsNewZone=0
+AutoRepair=1
+AutoClear=1
+LoginType=0
+
+[LoginGate]
+IP=127.0.0.1
+Port=5600
+
+[GameGates]
+ListenPort=5100
+GameGate1=127.0.0.1:7100
+
+[GameServer]
+ListenPort=6000
+GameServer1=127.0.0.1

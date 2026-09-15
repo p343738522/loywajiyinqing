@@ -1,0 +1,27 @@
+; MirGate.ini.example — copy to MirGate.ini next to GameGate.exe
+; Client sessions land here AFTER LoginGate 4002 jump (Param = GatePort).
+
+[Server]
+Title=GS
+GateAddr=0.0.0.0
+; Must match the port LoginGate/DBSvr advertise in Native77 2001 (wGatePort)
+GatePort=7100
+; DBSvr user-socket (character list / 4004), not LoginGate Native77 5600
+DBServerIP=127.0.0.1
+DBServerPort=5100
+GameServerIP=127.0.0.1
+GameServerPort=5000
+GateIndex=1
+MaxUser=5000
+MaxSend=1000
+ServeCount=16
+Mode=1
+; 1 = 允许检测 |LH Tiger。明文 G2.5 lua 未设 def.openNewTigerGate，首包是二进制 0xFF44FF44，不会强制 Tiger。
+OpenNewTigerGate=1
+Globalspeed=0
+
+[Login]
+; Optional. CM_LOGIN_AUTH is authenticated by LoginGate, not GameGate.
+; Empty = no in-process ticket map (fail-closed). Env: GAMEGATE_TICKET_DB or LOGINGATE_TICKET_DB
+; TicketDb=server=127.0.0.1;port=3306;uid=root;pwd=YOUR_PASSWORD;database=account;charset=utf8
+TicketDb=

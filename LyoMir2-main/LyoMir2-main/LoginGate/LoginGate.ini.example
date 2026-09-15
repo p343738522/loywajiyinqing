@@ -1,0 +1,41 @@
+﻿; LoginGate.ini.example — copy to LoginGate.ini next to LoginGate.exe.
+; Native uGateListen.pas LoginGateListen=7000; uDBListen.pas DBServerListen=5600;
+; uPigListen.pas PIGServerListen=7766 (ini 可省略，源码默认 7766)。
+; TicketDb 是本仓 C# 扩展；空 = fail-closed，不要造假登录。
+; group1name = 客户端 4002 选服名（原版 SameText）；group1DBS = DBSvr ServerName。
+; 1.85 原包 LoginGate.ini / DBService.ini / Gs1 均为 收复台湾。AreaIdx=180。
+
+[Setup]
+; BaiZhu TCP 选服（LM_GET_ENCRYPT CONNECT）。白猪 scene 无 :port 时默认也连 7000。
+LoginGateListen=7000
+; Native77：DBSvr/GameGate 注册 + 1001/2001。不是白猪客户端口。
+DBServerListen=5600
+; 本仓额外 PIG 兼容口。原版运行时 ini 没有此项，源码仍监听 7766。
+PIGServerListen=7766
+PIGServerIP=0.0.0.0
+Project=1
+SecondZone=0
+DenySpreader=0
+PK_Warning=0
+DebugMode=0
+CompressMode=
+
+[DBServerIP]
+IPAddress1=127.0.0.1
+
+[Area1]
+AreaIdx=180
+Suffix=
+group1DBS=收复台湾
+group1name=收复台湾
+group1Desc=收复台湾
+group1idx=1
+
+[Login]
+; Empty = fail-closed. Never invent a successful login.
+; BaiZhu HTTP /account + /reg on this process (plaintext G2.5 def.gatePort).
+AccountHttpListen=8088
+; zoneip in /account server list. Empty = HTTP Host header.
+AdvertiseHost=
+; TicketDb=server=127.0.0.1;port=3306;uid=root;pwd=YOUR_PASSWORD;database=account;charset=utf8
+TicketDb=

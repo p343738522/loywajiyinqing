@@ -1,0 +1,291 @@
+using System.Collections.Generic;
+using GameSvr.Services;
+using SystemModule;
+
+namespace GameSvr
+{
+    /// <summary>
+    /// Faithful ports of the two hero-facing native CM handlers cm-3 had left
+    /// fail-closed:
+    ///   CM 3503 (0x0DAF) leaf 0x6DAF44 -> worker 0x6EF970 — hero skill 升龙破
+    ///           readiness probe.
+    ///   CM 4105 (0x1009) leaf 0x6DA005 -> workers 0x7742C0 / 0x6BCE2C / 0x6EE174 —
+    ///           mount-summon / status-refresh triple.
+    ///
+    /// HOOKING (this port never edits the shared Operate()/dispatch files):
+    /// TPlayObject.Message.cs threads the native fallbacks as
+    ///     if (... &amp;&amp; !TryHandleNativeCmQ1(ProcessMsg)
+    ///            &amp;&amp; !TryHandleNativeCmQ2(ProcessMsg)
+    ///            &amp;&amp; !TryHandleNativeCmQ3(ProcessMsg))
+    ///         result = base.Operate(ProcessMsg);
+    /// Wire THIS probe in AHEAD of the Q3 arm so it upgrades CM 3503 / CM 4105
+    /// before their fail-closed Q3 stubs (TPlayObject.NativeCmProtocol_Q3.cs) can
+    /// claim them, i.e.
+    ///     ... &amp;&amp; !TryHandleHeroNotifyCm(ProcessMsg)   // &lt;-- insert before Q3
+    ///         &amp;&amp; !TryHandleNativeCmQ3(ProcessMsg))
+    /// No shared file is touched here; the one-line insertion above is the whole
+    /// integration step.
+    ///
+    /// Evidence base: flat_image.bin @ ImageBase 0x400000, capstone x86-32.
+    /// THeroAct VMT 0x685630 (HeroObject.cs). Every gate that reads modelled state
+    /// is reproduced 1:1; the legs that read an unmodelled field are withheld with
+    /// a throttled record rather than inventing wire bytes (§铁律 fail-closed).
+    /// </summary>
+    public partial class TPlayObject
+    {
+        // === HeroNotify subsystem ===
+
+        /// <summary>Magic id AND cold-time key for 升龙破, the literal 0x111 that
+        /// 0x690A24 hands to both hero VMT calls (0x690A31 `mov dx,0x111` for the
+        /// magic-list probe, 0x690A54 `mov edx,0x111` for the cooldown probe). Equal
+        /// to SpellsDef.SKILL_273 and to TBaseObject.NativeSkill273's ColdTimeKey, so
+        /// a cooldown armed by an actual 升龙破 cast (SetNativeColdTime 0x111) is the
+        /// very entry this probe reads back.</summary>
+        private const int HeroNotifyDragonBreakId = 0x111;
+
+        /// <summary>Notice colour word cx=0x38FF at 0x6EF9C7, split for the wire the
+        /// way TBaseObject.NativeSkill273.cs splits its own vmt+0xD4 hint: low byte =
+        /// FColor, high byte = BColor. MakeWord(0xFF,0x38) is exactly the
+        /// btRedMsgFColor/btRedMsgBColor default pair (GameSvrConfig.cs 0xFF / 0x38),
+        /// i.e. MsgColor.Red.</summary>
+        private const byte HeroNotifyRedFColor = 0xFF;   // 0x38FF & 0xFF
+        private const byte HeroNotifyRedBColor = 0x38;   // 0x38FF >> 8
+
+        /// <summary>String @0x6EFA04 (18 GBK bytes, byte-exact round-trip).</summary>
+        private const string HeroNotifyDragonBreakNotLearned = "没有学会技能升龙破";
+
+        /// <summary>String @0x6EFA20 (20 GBK bytes, byte-exact round-trip).</summary>
+        private const string HeroNotifyDragonBreakOnCooldown = "技能升龙破还在冷却中";
+
+        /// <summary>
+        /// Managed-only broadcast carrier for the CM 4105 summon-start frame.
+        /// This value is not a native RM constant; the message pump serializes
+        /// it as SM 3412.
+        /// </summary>
+        internal const int NativeHorseCallStartRefMessage = 15324;
+
+        /// <summary>
+        /// Insert before TryHandleNativeCmQ3 (see the class remarks). Returns true
+        /// for the two idents it owns so the dispatch chain stops.
+        /// </summary>
+        private bool TryHandleHeroNotifyCm(TProcessMessage processMessage)
+        {
+            switch (processMessage.wIdent)
+            {
+                case Grobal2.CM_3503: HeroNotifyCm3503(); return true;
+                case Grobal2.CM_4105: HeroNotifyCm4105(); return true;
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// CM 3503, leaf 0x6DAF44 (`mov eax,[ebp-4]` Self / `call 0x6EF970`), worker
+        /// 0x6EF970(Self). Data flow, each offset from its own instruction:
+        ///
+        ///   0x6EF98E  mov eax,[Self+0xBB0]  -> m_HeroObject
+        ///   0x6EF994  test eax,eax
+        ///   0x6EF996  je 0x6EF9D8           -> no hero: bare SEH teardown, SILENCE
+        ///   0x6EF998  call 0x690A24         -> HeroCheckState(hero), returns 0/-1/-2
+        ///   0x6EF99D  sub eax,-2 / branch   -> -1 picks string @0x6EFA04,
+        ///                                       -2 picks string @0x6EFA20, 0 none
+        ///   0x6EF9C1  cmp [ebp-4],0 / je    -> empty string: send nothing
+        ///   0x6EF9C7  mov cx,0x38FF         -> SysMsg red colour word
+        ///   0x6EF9D2  call [Self.vmt+0xD4]  -> SysMsg on Self (the player)
+        ///
+        /// The no-hero silence, both notice legs, and the raw +0x6D9 state write
+        /// are reproduced. The ready leg writes one and deliberately sends no
+        /// success reply.
+        /// </summary>
+        private void HeroNotifyCm3503()
+        {
+            // 0x6EF98E..0x6EF996: no hero -> silence.
+            HeroObject hero = m_HeroObject;
+            if (hero == null)
+            {
+                return;
+            }
+
+            switch (HeroNotifyDragonBreakState(hero))
+            {
+                case -1:
+                    // 0x6EF9A5..0x6EF9B2 -> string @0x6EFA04.
+                    HeroNotifyRedSysMsg(HeroNotifyDragonBreakNotLearned);
+                    break;
+                case -2:
+                    // 0x6EF9B4..0x6EF9BC -> string @0x6EFA20.
+                    HeroNotifyRedSysMsg(HeroNotifyDragonBreakOnCooldown);
+                    break;
+                default:
+                    // 0x690A75 writes one; 0x6EF9C1 then exits in silence.
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 0x690A24 HeroCheckState(hero), operating on the hero (eax=[Self+0xBB0] at
+        /// the call site). Returns -1 (not learned), -2 (still cooling) or 0 (ready):
+        ///
+        ///   0x690A2F  xor ecx,ecx / mov dx,0x111
+        ///   0x690A39  call [hero.vmt+0xE8]  -> 0x741628 FindMagic(hero,cl=0,id=0x111)
+        ///   0x690A46  je (== 0)             -> not learned: [hero+0x6D9]=0, ret -1
+        ///   0x690A54  mov edx,0x111
+        ///   0x690A5D  call [hero.vmt+0x1F4] -> 0x748288 QueryColdTime(hero,0x111)
+        ///   0x690A63  test eax,eax / jle    -> &gt;0: cooling: [hero+0x6D9]=0, ret -2
+        ///   0x690A75  (&lt;=0)               -> ready: [hero+0x6D9]=1, ret 0
+        ///
+        /// hero VMT+0xE8 (0x741628) scans [hero+0x500] (the magic list) for the
+        /// TUserMagic whose MagicInfo.wMagicID equals the id; with cl=0 it applies no
+        /// level filter — exactly HeroObject.FindHeroMagicById. hero VMT+0x1F4
+        /// (0x748288) is the cold-time query modelled as
+        /// TBaseObject.QueryNativeColdTime / GetNativeColdTimeRemaining, which
+        /// HeroObject supports (SupportsNativeColdTime =&gt; true).
+        /// </summary>
+        private static int HeroNotifyDragonBreakState(HeroObject hero)
+        {
+            // 0x690A39 hero.vmt+0xE8: magic learned?
+            if (!HeroNotifyHasLearnedMagic(hero, HeroNotifyDragonBreakId))
+            {
+                hero.m_btNativeDragonBreakState6D9 = 0;
+                return -1;
+            }
+
+            // 0x690A5D hero.vmt+0x1F4: remaining > 0 reads as "still cooling"
+            // (0x690A63 test/jle keeps <=0, including a negative, as ready).
+            if (hero.GetNativeColdTimeRemaining(HeroNotifyDragonBreakId) > 0)
+            {
+                hero.m_btNativeDragonBreakState6D9 = 0;
+                return -2;
+            }
+
+            hero.m_btNativeDragonBreakState6D9 = 1;
+            return 0;
+        }
+
+        /// <summary>
+        /// 0x741628 hero VMT+0xE8 with cl=0: linear scan of the hero magic list
+        /// [hero+0x500] comparing MagicInfo.wMagicID (0x741665 `mov ax,[[item]+0x10]`
+        /// / 0x741669 `cmp ax,id`). Mirrors HeroObject.FindHeroMagicById (which cm-3
+        /// keeps private on the hero) without touching that file.
+        /// </summary>
+        private static bool HeroNotifyHasLearnedMagic(HeroObject hero, int magicId)
+        {
+            IList<TUserMagic> list = hero.m_HeroMagicList;
+            if (list == null)
+            {
+                return false;
+            }
+
+            foreach (TUserMagic magic in list)
+            {
+                if (magic?.MagicInfo != null && magic.MagicInfo.wMagicID == magicId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 0x6EF9C7..0x6EF9D2: cx=0x38FF SysMsg on Self via vmt+0xD4. Native stores
+        /// that word in the RM record and copies the GBK text including its trailing
+        /// NUL. Use the raw RM_SYSMESSAGE path so both values survive the queue hop.
+        /// </summary>
+        private void HeroNotifyRedSysMsg(string text)
+        {
+            var textBytes = HUtil32.GbkEncoding.GetBytes(text);
+            var body = new byte[textBytes.Length + 1];
+            textBytes.CopyTo(body, 0);
+            SendMsg(this, Grobal2.RM_SYSMESSAGE, 0x38FF,
+                0, 0, 0, string.Empty, body, body.Length);
+        }
+
+        /// <summary>
+        /// CM 4105, leaf 0x6DA005 fires three workers in program order:
+        ///
+        ///   0x7742C0(Self) — stealth reveal. Gates on state 0x40
+        ///     (0x7742D6 `mov dl,0x40` / 0x772960 getter); when set it clears it
+        ///     (0x7731C0) and broadcasts RM_TURN 0x2711 built from [Self+0x12C]/
+        ///     [+0x130] plus vmt+0x90 (GetShowName) and byte [Self+0x154], through
+        ///     vmt+0xD8. Modelled as TBaseObject.BreakNativeStealthOnAction.
+        ///   0x6BCE2C(Self,Ident=word[rec+4]) — cancel the pending action channels.
+        ///     0x6BCE2C..0x6BCE52 is a single-ret body holding exactly three calls:
+        ///     0x6EE128 (0x6EE164 `mov dx,0x4D0`), 0x6EF5D0 (0x6EF62E `mov dx,0x4D2`)
+        ///     and vmt+0x1D8 = 0x6EE2AC (0x6EE2DF `mov dx,0xD57`). Modelled as
+        ///     TPlayObject.CancelNativeActionChannels. The Ident argument is dead:
+        ///     all three callees start by overwriting edx with eax.
+        ///   0x6EE174(Self,Ident) — mount summon. Gates on state 0x33/0x34,
+        ///     nullable map NORIDE, then equipment slot 15. Its generic
+        ///     [Self+0xA24]==0x72 refusal is unreachable here because the preceding
+        ///     0x6BCE2C clears every nonzero value. Success repeats 0x6BCE2C, arms
+        ///     pending/tick/delay=3000, and broadcasts SM 3412 to visible players
+        ///     including Self.
+        ///
+        /// The two reachable refusals use raw GBK-plus-NUL RM_SYSMESSAGE payloads
+        /// with Param=0xFCFF. No client record field other than Ident participates.
+        /// </summary>
+        private void HeroNotifyCm4105()
+        {
+            // Leaf order 0x6DA008 then 0x6DA017. Both prefix effects precede
+            // every worker gate, including an already-mounted silent return.
+            BreakNativeStealthOnAction();
+            CancelNativeActionChannels();
+
+            // sub_6BBEB8 checks both body states 0x33 and 0x34.
+            if (HasNativeActiveState(NativeHorseMountedState) ||
+                HasNativeActiveState(NativeHorseBlockedState))
+            {
+                return;
+            }
+
+            // A null map pointer skips this restriction in native 2.08.
+            if (m_PEnvir?.Flag.boNORIDE == true)
+            {
+                HeroNotifyHorseRefusal("当前地图不能召唤坐骑！");
+                return;
+            }
+
+            var mount = m_UseItems != null &&
+                        m_UseItems.Length > Grobal2.U_MOUNT
+                ? m_UseItems[Grobal2.U_MOUNT]
+                : null;
+            if (mount == null)
+            {
+                HeroNotifyHorseRefusal("您无主宰者马牌,无法召唤坐骑！");
+                return;
+            }
+
+            // The worker repeats sub_6BCE2C on success. After the leaf prefix it
+            // is packet-idempotent, while preserving the unconditional location
+            // channel active-byte clear.
+            CancelNativeActionChannels();
+            m_boNativeHorseCallPending = true;
+            m_dwNativeHorseCallTick = unchecked((uint)HUtil32.GetTickCount());
+            m_wNativeHorseCallDelay = 3000;
+            if (m_PEnvir == null)
+            {
+                // Native's nullable map gate skips only NORIDE; the +0xE0
+                // worker still reaches the caller. With no environment there
+                // is no visible set to walk, so retain the Self delivery.
+                SendMsg(this, NativeHorseCallStartRefMessage, 0, 0, 3000, 0,
+                    string.Empty);
+            }
+            else
+            {
+                SendRefMsg(NativeHorseCallStartRefMessage, 0, 0, 3000, 0,
+                    string.Empty);
+            }
+        }
+
+        private void HeroNotifyHorseRefusal(string text)
+        {
+            var textBytes = HUtil32.GbkEncoding.GetBytes(text);
+            var body = new byte[textBytes.Length + 1];
+            textBytes.CopyTo(body, 0);
+            SendMsg(this, Grobal2.RM_SYSMESSAGE, 0xFCFF,
+                0, 0, 0, string.Empty, body, body.Length);
+        }
+
+    }
+}
