@@ -168,7 +168,11 @@ foreach (var n in new[] { "KingActorVal", "SetSSKLv", "SetSSKColdTime", "Upgrade
 
 // delegations
 Equal("sub_6D1E98", NativeGmHeroFieldCommands.Evaluate("UpUserHeroExp", 5, new[] { "bob", "100" }).NativeCore, "UpUserHeroExp core");
-Equal("sub_6F3284", NativeGmHeroFieldCommands.Evaluate("HeroAbil", 4, null).NativeCore, "HeroAbil core");
+Equal(true, NativeGmHeroFieldCommands.Find("HeroAbil").CoreBodyDeferred, "HeroAbil CoreBodyDeferred");
+var heroAbil = NativeGmHeroFieldCommands.Evaluate("HeroAbil", 4, null);
+Equal("sub_6F3284", heroAbil.NativeCore, "HeroAbil core");
+Equal(true, heroAbil.CoreBodyDeferred, "HeroAbil eval deferred");
+Equal(NativeGmHeroFieldCommands.NoSysMsg, heroAbil.NativeSysMsgIdent, "HeroAbil no shim SysMsg");
 
 // RestHero
 NativeGmHeroFieldCommands.HeroPresent = true; NativeGmHeroFieldCommands.RestHeroBlocked = false;

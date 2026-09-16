@@ -1,7 +1,7 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 using SystemModule;
 
 namespace GameSvr
@@ -13,6 +13,7 @@ namespace GameSvr
     ///   +0x0C ShortString[0x1E] name.
     /// Records are stored in the singleton table [[0x7D6014]]; slot cap
     /// [[0x7D5AEC]] is set to 4 at 0x7553F9.
+    /// CM 4125 / sub_746C34 is the read-only table broadcast (SM 4032 + SM 4038).
     /// </summary>
     public sealed class NativeShenYouAttributeEntry
     {
@@ -22,21 +23,59 @@ namespace GameSvr
         public string Name { get; init; }
     }
 
+    public readonly struct NativeShenYouTableQueryResult
+    {
+        public NativeShenYouTableQueryResult(bool sendTable, int recog,
+            ushort tag, ushort flagParam, byte[] body)
+        {
+            SendTable = sendTable;
+            Recog = recog;
+            Tag = tag;
+            FlagParam = flagParam;
+            Body = body ?? Array.Empty<byte>();
+        }
+
+        public bool SendTable { get; }
+        public int Recog { get; }
+        public ushort Tag { get; }
+        public ushort FlagParam { get; }
+        public byte[] Body { get; }
+    }
+
     public sealed class NativeShenYouAttributeConfig
     {
         public const string ConfigRelativePath = @"Share\config\神佑属性.txt";
         public const int NativeRecordSize = 0x2B;
         public const int NativeMaxSlots = 4;
+        public const int NameOffset = 0x0C;
+        public const int NameCapacity = 0x1E;
+        public const uint TableVa = 0x007D6014;
+        public const uint SlotCapVa = 0x007D5AEC;
+        public const uint FlagVa = 0x007D6938;
+        public const uint QueryWorkerEa = 0x00746C34;
+        public const int CmQuery = 4125;
+        public const int SmTable = 4032;
+        public const int SmFlag = 4038;
+
+        /// <summary>
+        /// [[0x7D6938]] is not a C# singleton. SM 4038 Param stays 0; do not invent 1.
+        /// </summary>
+        public static bool FlagByteMapped => false;
 
         private static readonly NativeShenYouAttributeConfig _shared =
             new NativeShenYouAttributeConfig();
 
         public static NativeShenYouAttributeConfig Shared => _shared;
 
+        private readonly object _sync = new();
         private readonly Dictionary<int, NativeShenYouAttributeEntry> _byId =
             new Dictionary<int, NativeShenYouAttributeEntry>();
+        private readonly List<NativeShenYouAttributeEntry> _order = new();
 
-        public int Count => _byId.Count;
+        public int Count
+        {
+            get { lock (_sync) { return _order.Count; } }
+        }
 
         public static string ResolveDefaultPath(string rootPath, string baseDir)
         {
@@ -45,38 +84,96 @@ namespace GameSvr
         }
 
         public bool TryGet(int id, out NativeShenYouAttributeEntry entry)
-            => _byId.TryGetValue(id, out entry);
+        {
+            lock (_sync)
+                return _byId.TryGetValue(id, out entry);
+        }
+
+        public NativeShenYouAttributeEntry[] Snapshot()
+        {
+            lock (_sync)
+                return _order.ToArray();
+        }
+
+        /// <summary>
+        /// CM 4125 / 0x746C4A jle: count&lt;=0 sends nothing. Else SM 4032 Recog=count
+        /// Tag=[[0x7D5AEC]] body=count*0x2B, then SM 4038 Param=[[0x7D6938]]!=0.
+        /// </summary>
+        public static NativeShenYouTableQueryResult Evaluate(
+            IReadOnlyList<NativeShenYouAttributeEntry> rows)
+        {
+            if (rows == null || rows.Count <= 0)
+                return new NativeShenYouTableQueryResult(false, 0, 0, 0,
+                    Array.Empty<byte>());
+
+            return new NativeShenYouTableQueryResult(true, rows.Count, NativeMaxSlots,
+                FlagByteMapped ? (ushort)1 : (ushort)0, EncodeTable(rows));
+        }
+
+        public static byte[] EncodeRecord(NativeShenYouAttributeEntry entry)
+        {
+            var record = new byte[NativeRecordSize];
+            if (entry == null)
+                return record;
+
+            BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(0, 4), entry.Id);
+            BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(4, 4), entry.BaseValue);
+            BinaryPrimitives.WriteInt32LittleEndian(record.AsSpan(8, 4), entry.Param3);
+            WriteName(record.AsSpan(NameOffset, NameCapacity + 1), entry.Name);
+            return record;
+        }
+
+        public static byte[] EncodeTable(IReadOnlyList<NativeShenYouAttributeEntry> rows)
+        {
+            if (rows == null || rows.Count <= 0)
+                return Array.Empty<byte>();
+
+            var body = new byte[rows.Count * NativeRecordSize];
+            for (var i = 0; i < rows.Count; i++)
+                EncodeRecord(rows[i]).CopyTo(body, i * NativeRecordSize);
+            return body;
+        }
+
+        private static void WriteName(Span<byte> dest, string name)
+        {
+            dest.Clear();
+            var bytes = HUtil32.GbkEncoding.GetBytes(name ?? string.Empty);
+            var n = Math.Min(bytes.Length, NameCapacity);
+            dest[0] = unchecked((byte)n);
+            if (n > 0)
+                bytes.AsSpan(0, n).CopyTo(dest.Slice(1));
+        }
 
         /// <summary>0x747B38 — sum [entry+4] for each non-zero slot word.</summary>
         public int ComputeBaseFromSlots(ReadOnlySpan<ushort> slotIds)
         {
-            var total = 0;
-            for (var i = 0; i < slotIds.Length; i++)
+            lock (_sync)
             {
-                var id = slotIds[i];
-                if (id == 0)
-                    continue;
-                if (!_byId.TryGetValue(id, out var entry))
-                    return -1;
-                total += entry.BaseValue;
+                var total = 0;
+                for (var i = 0; i < slotIds.Length; i++)
+                {
+                    var id = slotIds[i];
+                    if (id == 0)
+                        continue;
+                    if (!_byId.TryGetValue(id, out var entry))
+                        return -1;
+                    total += entry.BaseValue;
+                }
+                return total;
             }
-            return total;
         }
 
         public bool Reload(string fileName, out string error)
         {
             error = string.Empty;
-            _byId.Clear();
 
-            if (string.IsNullOrWhiteSpace(fileName))
+            if (string.IsNullOrWhiteSpace(fileName) || !File.Exists(fileName))
             {
-                error = "[Error]:神佑属性文件不存在！！";
-                M2Share.ErrorMessage(error);
-                return false;
-            }
-
-            if (!File.Exists(fileName))
-            {
+                lock (_sync)
+                {
+                    _byId.Clear();
+                    _order.Clear();
+                }
                 error = "[Error]:神佑属性文件不存在！！";
                 M2Share.ErrorMessage(error);
                 return false;
@@ -89,36 +186,48 @@ namespace GameSvr
             }
             catch (Exception ex)
             {
+                lock (_sync)
+                {
+                    _byId.Clear();
+                    _order.Clear();
+                }
                 error = "[Error]:神佑属性文件加载错误: " + ex.Message;
                 M2Share.ErrorMessage(error);
                 return false;
             }
 
-            foreach (var raw in lines)
+            lock (_sync)
             {
-                var line = raw?.Trim();
-                if (string.IsNullOrEmpty(line))
-                    continue;
-                if (line[0] == ';' || line[0] == '/')
-                    continue;
+                _byId.Clear();
+                _order.Clear();
 
-                if (!TryParseLine(line, out var entry, out var lineError))
+                foreach (var raw in lines)
                 {
-                    error = "[Error]:神佑属性文件加载错误: " + lineError;
-                    M2Share.ErrorMessage(error);
-                    return false;
-                }
+                    var line = raw?.Trim();
+                    if (string.IsNullOrEmpty(line))
+                        continue;
+                    if (line[0] == ';' || line[0] == '/')
+                        continue;
 
-                if (_byId.ContainsKey(entry.Id))
-                {
-                    error = "[Error]:神佑属性文件加载错误: duplicate id " + entry.Id;
-                    M2Share.ErrorMessage(error);
-                    return false;
-                }
+                    if (!TryParseLine(line, out var entry, out var lineError))
+                    {
+                        error = "[Error]:神佑属性文件加载错误: " + lineError;
+                        M2Share.ErrorMessage(error);
+                        return false;
+                    }
 
-                _byId[entry.Id] = entry;
-                if (_byId.Count > NativeMaxSlots * 64)
-                    break;
+                    if (_byId.ContainsKey(entry.Id))
+                    {
+                        error = "[Error]:神佑属性文件加载错误: duplicate id " + entry.Id;
+                        M2Share.ErrorMessage(error);
+                        return false;
+                    }
+
+                    _byId[entry.Id] = entry;
+                    _order.Add(entry);
+                    if (_order.Count > NativeMaxSlots * 64)
+                        break;
+                }
             }
 
             return true;

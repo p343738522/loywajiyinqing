@@ -22,10 +22,12 @@ try
     CheckJoinGildRefuseQueuesType2();
     CheckUnionRefuseQueuesType3();
     CheckLoginDrainEmitsAndConsumes();
+    CheckOnlineRefuseSendsAndDoesNotQueue();
+    CheckGhostRecipientFallsBackToQueue();
     Console.WriteLine(
         "PASS NativePendingNoticeProtocolCheck SM4612=17-byte " +
         "type+ShortString15 empty-send=true refuse-tags=1/2/3 " +
-        "fifo=preserved login-drain=atomic");
+        "fifo=preserved login-drain=atomic online-refuse=push");
     return 0;
 }
 catch (Exception ex)
@@ -164,6 +166,107 @@ static void CheckLoginDrainEmitsAndConsumes()
         "empty login still emits native always-send frame");
     Equal(0, player.BinaryPackets[1].Body.Length,
         "second login frame is empty");
+}
+
+static void CheckOnlineRefuseSendsAndDoesNotQueue()
+{
+    var service = NewService();
+    Equal(0, service.RequestJoin(
+            new NativeCorpsActor(77, "申请人", 50, 0, 0), 100),
+        "online corps join request creation");
+
+    var applicant = new ProbePlayer();
+    applicant.LoadNativeMailRecipientId(77);
+    var list = PlayObjectList();
+    list.Add(applicant);
+    try
+    {
+        Equal(0, service.RefuseRequest(1, 77),
+            "online corps join refusal succeeds");
+        Equal(0, service.PendingNoticeCount(77),
+            "online refusal does not queue");
+        Equal(1, applicant.BinaryPackets.Count,
+            "online refusal emits one SM4612 frame");
+        Equal(Grobal2.SM_PENDING_NOTICE, applicant.BinaryPackets[0].Header.Ident,
+            "online frame ident");
+        Equal(0, applicant.BinaryPackets[0].Header.Recog, "online Recog");
+        Equal((ushort)0, applicant.BinaryPackets[0].Header.Param, "online Param");
+        Equal((ushort)0, applicant.BinaryPackets[0].Header.Tag, "online Tag");
+        Equal((ushort)0, applicant.BinaryPackets[0].Header.Series, "online Series");
+        Equal(17, applicant.BinaryPackets[0].Body.Length,
+            "online frame is one 17-byte record");
+        Equal(NativeGildOfflineNotice.JoinCorpsRefuseType,
+            applicant.BinaryPackets[0].Body[0],
+            "online refusal tag is native 1");
+        Equal("本方战队", ReadShort(applicant.BinaryPackets[0].Body.AsSpan(1, 16)),
+            "online refusal text is target corps name");
+    }
+    finally
+    {
+        list.Remove(applicant);
+    }
+
+    Equal(0, service.ApplyGildRequestJoin(9, 200),
+        "online join-gild request creation");
+    var gildApplicant = new ProbePlayer();
+    gildApplicant.LoadNativeMailRecipientId(9);
+    list.Add(gildApplicant);
+    try
+    {
+        Equal(0, service.ApplyGildRefuseRequest(1, 1),
+            "online join-gild refusal succeeds");
+        Equal(0, service.PendingNoticeCount(9),
+            "online gild refusal does not queue");
+        Equal(1, gildApplicant.BinaryPackets.Count,
+            "online gild refusal emits one SM4612 frame");
+        Equal(Grobal2.SM_PENDING_NOTICE, gildApplicant.BinaryPackets[0].Header.Ident,
+            "online gild frame ident");
+        Equal(17, gildApplicant.BinaryPackets[0].Body.Length,
+            "online gild frame is one 17-byte record");
+        Equal(NativeGildOfflineNotice.JoinGildRefuseType,
+            gildApplicant.BinaryPackets[0].Body[0],
+            "online gild refusal tag is native 2");
+        Equal("本方行会", ReadShort(gildApplicant.BinaryPackets[0].Body.AsSpan(1, 16)),
+            "online gild refusal text is target gild name");
+    }
+    finally
+    {
+        list.Remove(gildApplicant);
+    }
+}
+
+static void CheckGhostRecipientFallsBackToQueue()
+{
+    var service = NewService();
+    Equal(0, service.RequestJoin(
+            new NativeCorpsActor(77, "申请人", 50, 0, 0), 100),
+        "ghost corps join request creation");
+    var ghost = new ProbePlayer { m_boGhost = true };
+    ghost.LoadNativeMailRecipientId(77);
+    var list = PlayObjectList();
+    list.Add(ghost);
+    try
+    {
+        Equal(0, service.RefuseRequest(1, 77),
+            "ghost corps join refusal succeeds");
+        Equal(1, service.PendingNoticeCount(77),
+            "ghost recipient stays on the offline queue");
+        Equal(0, ghost.BinaryPackets.Count,
+            "ghost recipient is not pushed");
+    }
+    finally
+    {
+        list.Remove(ghost);
+    }
+}
+
+static IList<TPlayObject> PlayObjectList()
+{
+    var field = typeof(UserEngine).GetField("m_PlayObjectList",
+        BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new Exception("UserEngine.m_PlayObjectList missing");
+    return (IList<TPlayObject>)field.GetValue(M2Share.UserEngine)
+        ?? throw new Exception("UserEngine.m_PlayObjectList is null");
 }
 
 static NativeCorpsService NewService()

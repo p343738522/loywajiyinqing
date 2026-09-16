@@ -46,6 +46,90 @@ namespace GameSvr
                     Math.Max(fallbackTimeoutMs, 1)));
         }
 
+        private const int VisibleObjectPoolCap = 1024;
+
+        [ThreadStatic]
+        private static Stack<TVisibleBaseObject> t_VisibleActorPool;
+
+        [ThreadStatic]
+        private static Stack<VisibleMapItem> t_VisibleItemPool;
+
+        protected static TVisibleBaseObject RentVisibleBaseObject(TBaseObject actor)
+        {
+            TVisibleBaseObject item = null;
+            var pool = t_VisibleActorPool;
+            if (pool != null && pool.Count > 0)
+            {
+                item = pool.Pop();
+            }
+            item ??= new TVisibleBaseObject();
+            item.BaseObject = actor;
+            item.nVisibleFlag = 2;
+            return item;
+        }
+
+        protected static void ReturnVisibleBaseObject(TVisibleBaseObject item)
+        {
+            if (item == null)
+            {
+                return;
+            }
+            item.BaseObject = null;
+            item.nVisibleFlag = 0;
+            var pool = t_VisibleActorPool;
+            if (pool == null)
+            {
+                pool = new Stack<TVisibleBaseObject>(64);
+                t_VisibleActorPool = pool;
+            }
+            if (pool.Count < VisibleObjectPoolCap)
+            {
+                pool.Push(item);
+            }
+        }
+
+        protected static VisibleMapItem RentVisibleMapItem(int wX, int wY, MapItem MapItem)
+        {
+            VisibleMapItem item = null;
+            var pool = t_VisibleItemPool;
+            if (pool != null && pool.Count > 0)
+            {
+                item = pool.Pop();
+            }
+            item ??= new VisibleMapItem();
+            item.nVisibleFlag = 2;
+            item.nX = wX;
+            item.nY = wY;
+            item.MapItem = MapItem;
+            item.sName = MapItem.Name;
+            item.wLooks = MapItem.Looks;
+            return item;
+        }
+
+        protected static void ReturnVisibleMapItem(VisibleMapItem item)
+        {
+            if (item == null)
+            {
+                return;
+            }
+            item.MapItem = null;
+            item.sName = null;
+            item.nVisibleFlag = 0;
+            item.nX = 0;
+            item.nY = 0;
+            item.wLooks = 0;
+            var pool = t_VisibleItemPool;
+            if (pool == null)
+            {
+                pool = new Stack<VisibleMapItem>(64);
+                t_VisibleItemPool = pool;
+            }
+            if (pool.Count < VisibleObjectPoolCap)
+            {
+                pool.Push(item);
+            }
+        }
+
         protected virtual void UpdateVisibleGay(TBaseObject BaseObject)
         {
             bool boIsVisible = false;
@@ -68,12 +152,7 @@ namespace GameSvr
             {
                 return;
             }
-            VisibleBaseObject = new TVisibleBaseObject
-            {
-                nVisibleFlag = 2,
-                BaseObject = BaseObject
-            };
-            m_VisibleActors.Add(VisibleBaseObject);
+            m_VisibleActors.Add(RentVisibleBaseObject(BaseObject));
         }
 
         protected void UpdateVisibleItem(int wX, int wY, MapItem MapItem)
@@ -94,16 +173,7 @@ namespace GameSvr
             {
                 return;
             }
-            VisibleMapItem = new VisibleMapItem
-            {
-                nVisibleFlag = 2,
-                nX = wX,
-                nY = wY,
-                MapItem = MapItem,
-                sName = MapItem.Name,
-                wLooks = MapItem.Looks
-            };
-            m_VisibleItems.Add(VisibleMapItem);
+            m_VisibleItems.Add(RentVisibleMapItem(wX, wY, MapItem));
         }
 
         protected void UpdateVisibleEvent(int wX, int wY, Event MapEvent)
@@ -269,7 +339,7 @@ namespace GameSvr
                     if (VisibleBaseObject.nVisibleFlag == 0)
                     {
                         m_VisibleActors.RemoveAt(n18);
-                        Dispose(VisibleBaseObject);
+                        ReturnVisibleBaseObject(VisibleBaseObject);
                         continue;
                     }
                     n18++;
@@ -368,7 +438,9 @@ namespace GameSvr
                     }
                     if (m_VisibleActors[n17].nVisibleFlag == 0)
                     {
+                        var stale = m_VisibleActors[n17];
                         m_VisibleActors.RemoveAt(n17);
+                        ReturnVisibleBaseObject(stale);
                         continue;
                     }
                     n17++;

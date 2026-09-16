@@ -281,6 +281,7 @@ internal sealed class NativeDbServerService
         var parser = new YbDbLegacy77StreamParser(
             maximumFrameLength: NativeLoginGateMaximumFrameLength);
         var buffer = new byte[8192];
+        var frames = new List<YbDbLegacy77Frame>(4);
         var stream = client.GetStream();
         state.Stream = stream;
         _liveConnections[connectionId] = state;
@@ -293,7 +294,7 @@ internal sealed class NativeDbServerService
                 var read = await stream.ReadAsync(buffer, state.Token)
                     .ConfigureAwait(false);
                 if (read == 0) break;
-                var frames = new List<YbDbLegacy77Frame>();
+                frames.Clear();
                 parser.Append(buffer.AsSpan(0, read), frames.Add);
                 foreach (var frame in frames)
                 {
@@ -576,12 +577,21 @@ internal sealed class NativeDbServerService
     private async Task SendFrameAsync(NativeConnectionState connection,
         NetworkStream stream, YbDbLegacy77Frame frame, CancellationToken cancellationToken)
     {
-        if (!YbDbLegacy77Codec.TryEncode(frame, out var wire, out var error))
-            throw new InvalidDataException(error);
+        var payloadLength = frame.Payload?.Length ?? 0;
+        var needed = YbDbLegacy77Codec.HeaderSize + payloadLength;
         await connection.SendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await stream.WriteAsync(wire, cancellationToken).ConfigureAwait(false);
+            var scratch = connection.EncodeScratch;
+            if (scratch.Length < needed)
+            {
+                scratch = new byte[needed];
+                connection.EncodeScratch = scratch;
+            }
+            if (!YbDbLegacy77Codec.TryEncode(frame, scratch, out var written, out var error))
+                throw new InvalidDataException(error);
+            await stream.WriteAsync(scratch.AsMemory(0, written), cancellationToken)
+                .ConfigureAwait(false);
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -646,6 +656,7 @@ internal sealed class NativeDbServerService
         public CancellationToken Token => _stop.Token;
         public bool Registered { get; set; }
         public SemaphoreSlim SendLock { get; } = new(1, 1);
+        public byte[] EncodeScratch = new byte[256];
 
         public void TrackAuthentication(Task task, Action<Exception> onFailure)
         {

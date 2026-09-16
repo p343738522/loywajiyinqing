@@ -515,6 +515,7 @@ internal sealed class SharedBackendHub : IDisposable
     {
         var buffer = new byte[8192];
         var parser = new DbServerGatewayFrameParser();
+        var dbFrames = new List<DbServerGatewayFrame>(8);
         while (!cancellationToken.IsCancellationRequested)
         {
             if (!await EnsureDbConnectedAsync(cancellationToken))
@@ -531,9 +532,10 @@ internal sealed class SharedBackendHub : IDisposable
                 {
                     var count = await stream.ReadAsync(buffer, cancellationToken);
                     if (count <= 0) throw new IOException("DBSvr closed the shared connection");
-                    if (!parser.TryAppend(buffer, 0, count, out var frames, out var error))
+                    dbFrames.Clear();
+                    if (!parser.TryAppend(buffer, 0, count, dbFrames, out var error))
                         throw new InvalidDataException(error);
-                    foreach (var frame in frames)
+                    foreach (var frame in dbFrames)
                     {
                         if (frame.Kind == DbServerGatewayFrameKind.NativeControl)
                             await DispatchDbControlAsync(frame,
@@ -556,6 +558,7 @@ internal sealed class SharedBackendHub : IDisposable
     {
         var buffer = new byte[8192];
         var parser = new GameGateServerFrameParser();
+        var gameFrames = new List<GameGateServerFrame>(8);
         while (!cancellationToken.IsCancellationRequested)
         {
             if (!await EnsureGameConnectedAsync(cancellationToken))
@@ -576,9 +579,10 @@ internal sealed class SharedBackendHub : IDisposable
                 {
                     var count = await stream.ReadAsync(buffer, cancellationToken);
                     if (count <= 0) throw new IOException("GameSvr closed the shared connection");
-                    if (!parser.TryAppend(buffer, 0, count, out var frames, out var error))
+                    gameFrames.Clear();
+                    if (!parser.TryAppend(buffer, 0, count, gameFrames, out var error))
                         throw new InvalidDataException(error);
-                    foreach (var frame in frames)
+                    foreach (var frame in gameFrames)
                     {
                         if (frame.Internal77 != null)
                             await DispatchGamePacketAsync(stream, generation, frame.Internal77,

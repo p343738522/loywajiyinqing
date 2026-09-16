@@ -8,6 +8,10 @@ namespace GameSvr
     // Faithful 1:1 port of the four CM handlers cm-1 previously routed to
     // NativeCmQ1FailClosed.Drop. Ground truth from flat_image.bin (ImageBase 0x400000).
     //
+    // C4: shopMgr [[0x7D5D98]] is unmapped (NativeShopQuery.ShopMgrPointerMapped=false).
+    // The LOCAL catalog queries are CM 1046/1047 (NativeShopQuery / MallManager), NOT 1054-1057.
+    // These four stay on the inactive-channel path; do not invent Ident-125 or a YB debit.
+    //
     // WHAT THE NATIVE HANDLERS ACTUALLY ARE
     // -------------------------------------
     // All four pack a fixed record and push it into the shop/元宝 manager's OUTBOUND

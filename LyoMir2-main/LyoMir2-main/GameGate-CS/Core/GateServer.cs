@@ -77,12 +77,15 @@ public sealed class GateServer : IDisposable
     }
 
     internal static InternalPacket77 CreateGameDataPacket(uint connId, uint sequence,
-        byte[] payload)
+        byte[] payload, int payloadLength = -1)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        if (payload.Length > NativeGameGateCommands.NativeM2MaximumBodyLength)
+        var length = payloadLength < 0 ? payload.Length : payloadLength;
+        if ((uint)length > (uint)payload.Length)
+            throw new ArgumentOutOfRangeException(nameof(payloadLength));
+        if (length > NativeGameGateCommands.NativeM2MaximumBodyLength)
             throw new InvalidDataException(
-                $"GameSvr payload {payload.Length} exceeds "
+                $"GameSvr payload {length} exceeds "
                 + $"{NativeGameGateCommands.NativeM2MaximumBodyLength} bytes");
 
         return new InternalPacket77
@@ -90,13 +93,32 @@ public sealed class GateServer : IDisposable
             Magic = InternalPacket77.MAGIC,
             ConnID = connId,
             SeqID = sequence,
-            FrameLen = checked((ushort)(InternalPacket77.HEADER_SIZE + payload.Length)),
+            FrameLen = checked((ushort)(InternalPacket77.HEADER_SIZE + length)),
             Cmd = NativeGameGateCommands.GateClientData,
             Field16 = unchecked((uint)Environment.TickCount),
-            Field20 = checked((uint)payload.Length),
-            Payload = payload
+            Field20 = checked((uint)length),
+            Payload = payload,
+            PayloadLength = length
         };
     }
+
+    internal static void WriteClientPacketHeader(Span<byte> dest, ClientPacket packet)
+    {
+        BinaryPrimitives.WriteInt32LittleEndian(dest.Slice(0, 4), packet.Recog);
+        BinaryPrimitives.WriteUInt16LittleEndian(dest.Slice(4, 2), packet.Ident);
+        BinaryPrimitives.WriteUInt16LittleEndian(dest.Slice(6, 2), packet.Param);
+        BinaryPrimitives.WriteUInt16LittleEndian(dest.Slice(8, 2), packet.Tag);
+        BinaryPrimitives.WriteUInt16LittleEndian(dest.Slice(10, 2), packet.Series);
+    }
+
+    internal static byte[] EnsureScratch(ref byte[] scratch, int needed)
+    {
+        if (scratch.Length < needed)
+            scratch = new byte[Math.Max(needed, scratch.Length == 0 ? needed : scratch.Length * 2)];
+        return scratch;
+    }
+
+    private static readonly byte[] EmptyLoginPromptBody = new byte[44];
 
     private static ClientPacket CreateSoftCloseQueryPacket(int sessionId) => new()
     {
@@ -140,26 +162,31 @@ public sealed class GateServer : IDisposable
         session.Y = packet.Param;
     }
 
-    private static string ReadPlayerText(byte[] body)
+    private static string ReadPlayerText(byte[] body, int offset, int count)
     {
-        if (body.Length == 0) return string.Empty;
-        int length = Array.IndexOf(body, (byte)0);
-        if (length < 0) length = body.Length;
+        if (count <= 0) return string.Empty;
+        int length = Array.IndexOf(body, (byte)0, offset, count);
+        if (length < 0) length = count;
+        else length -= offset;
         if (length == 0) return string.Empty;
 
-        string value = HUtil32.GetString(body, 0, length).Trim();
+        string value = HUtil32.GetString(body, offset, length).Trim();
         int controls = value.Count(ch => char.IsControl(ch) && ch != '\t');
         return value.Length > 0 && controls * 5 <= value.Length ? value : string.Empty;
     }
 
     private static void UpdatePlayerState(ClientSession session, ClientPacket packet, byte[] body)
+        => UpdatePlayerState(session, packet, body, 0, body?.Length ?? 0);
+
+    private static void UpdatePlayerState(ClientSession session, ClientPacket packet,
+        byte[] body, int offset, int count)
     {
         switch (packet.Ident)
         {
             case SM_NEWMAP:
             case Grobal2.SM_CHANGEMAP:
             {
-                string map = ReadPlayerText(body);
+                string map = ReadPlayerText(body, offset, count);
                 if (map.Length > 0) session.MapName = map;
                 session.X = packet.Param;
                 session.Y = packet.Tag;
@@ -169,8 +196,8 @@ public sealed class GateServer : IDisposable
                 session.Gold = Math.Max(0, packet.Recog);
                 session.Job = packet.Param & 0xFF;
                 session.Ingot = (uint)packet.Tag | ((long)packet.Series << 16);
-                if (body.Length >= sizeof(ushort))
-                    session.Level = BinaryPrimitives.ReadUInt16LittleEndian(body);
+                if (count >= sizeof(ushort))
+                    session.Level = BinaryPrimitives.ReadUInt16LittleEndian(body.AsSpan(offset, 2));
                 break;
             case Grobal2.SM_LEVELUP:
                 if (packet.Param > 0) session.Level = packet.Param;
@@ -587,6 +614,10 @@ public sealed class GateServer : IDisposable
 
             var buf = new byte[8192];
             var accBuf = new byte[InitialClientReceiveBuffer];
+            var pongBytes = new byte[12];
+            byte[] gsBodyScratch = Array.Empty<byte>();
+            byte[] delayedPayloadScratch = Array.Empty<byte>();
+            byte[] tigerDecodeScratch = Array.Empty<byte>();
             int accLen = 0;
             try
             {
@@ -616,8 +647,9 @@ public sealed class GateServer : IDisposable
                         {
                             try
                             {
-                                string tigerStr = Encoding.ASCII.GetString(accBuf, 0, lhIdx);
-                                byte[] decoded = TigerCodec.Decode(tigerStr, session.TigerKeyOffset);
+                                var tigerScratch = EnsureScratch(ref tigerDecodeScratch, lhIdx);
+                                int decodedLen = TigerCodec.Decode(accBuf.AsSpan(0, lhIdx),
+                                    session.TigerKeyOffset, tigerScratch);
 
                                 if (!session.IsTiger)
                                 {
@@ -625,20 +657,20 @@ public sealed class GateServer : IDisposable
                                     Trace("TIGER", $"Tiger protocol detected for {ip} (ID:{session.SessionId})");
                                 }
 
-                                Trace("TIGER", $"Decoded {tigerStr.Length}B tiger → {decoded.Length}B binary (keyOff={session.TigerKeyOffset})");
+                                Trace("TIGER", $"Decoded {lhIdx}B tiger → {decodedLen}B binary (keyOff={session.TigerKeyOffset})");
 
                                 // Replace accBuf: decoded binary + any trailing data after |LH
                                 int tigerConsumed = lhIdx + 3;
                                 int remaining = accLen - tigerConsumed;
-                                var decodedLength = decoded.Length + Math.Max(0, remaining);
+                                var decodedLength = decodedLen + Math.Max(0, remaining);
                                 if (decodedLength > MaximumClientReceiveBuffer)
                                     throw new InvalidDataException("decoded Tiger frame buffer overflow");
                                 if (decodedLength > accBuf.Length)
                                     Array.Resize(ref accBuf, Math.Min(MaximumClientReceiveBuffer,
                                         Math.Max(decodedLength, accBuf.Length * 2)));
                                 if (remaining > 0)
-                                    Buffer.BlockCopy(accBuf, tigerConsumed, accBuf, decoded.Length, remaining);
-                                Buffer.BlockCopy(decoded, 0, accBuf, 0, decoded.Length);
+                                    Buffer.BlockCopy(accBuf, tigerConsumed, accBuf, decodedLen, remaining);
+                                Buffer.BlockCopy(tigerScratch, 0, accBuf, 0, decodedLen);
                                 accLen = decodedLength;
                             }
                             catch (FormatException ex)
@@ -687,7 +719,7 @@ public sealed class GateServer : IDisposable
                             // :7100 登录阶段: CONNECT → SM_LOGIN=4003
                             // 白猪 processMsg 收到后发 CM_LOGIN_AUTH Ident=4004（外层 cmd=0x17）
                             var siInner = MobileLoginWireCodec.CreateLoginPrompt();
-                            var siFrame = E(siInner, new byte[44], mf.Header.Seq);
+                            var siFrame = E(siInner, EmptyLoginPromptBody, mf.Header.Seq);
                             await WriteClientMobileFrame(siFrame, allocateDataIndex: true);
                             Trace("SEND", $"→ SM_LOGIN ident={siInner.Ident}");
                             continue;
@@ -695,7 +727,6 @@ public sealed class GateServer : IDisposable
                         if (mf.Header.Marker == MobileCodec.MARKER_PING)
                         {
                             Interlocked.Increment(ref session.HeartbeatCount);
-                            var pongBytes = new byte[12];
                             // MARKER_PONG = 0x19FA
                             BitConverter.GetBytes(MobileCodec.SIGN).CopyTo(pongBytes, 0);
                             BitConverter.GetBytes((ushort)0x19FA).CopyTo(pongBytes, 4);
@@ -779,12 +810,14 @@ public sealed class GateServer : IDisposable
                             // Speed violation — delay the packet instead of dropping immediately
                             var delayedBody = mf.Body ?? Array.Empty<byte>();
                             var delayedClientPacket = CreateGameSvrClientPacket(mf.Inner, mf.Inner.Ident);
-                            var delayedPayload = new byte[ClientPacket.PackSize + delayedBody.Length];
-                            Buffer.BlockCopy(delayedClientPacket.GetBuffer(), 0, delayedPayload, 0, ClientPacket.PackSize);
+                            var delayedLen = ClientPacket.PackSize + delayedBody.Length;
+                            var delayedPayload = EnsureScratch(ref delayedPayloadScratch, delayedLen);
+                            WriteClientPacketHeader(delayedPayload.AsSpan(0, ClientPacket.PackSize),
+                                delayedClientPacket);
                             if (delayedBody.Length > 0)
                                 Buffer.BlockCopy(delayedBody, 0, delayedPayload, ClientPacket.PackSize, delayedBody.Length);
                             var delayedPacket = CreateGameDataPacket(route.ConnId,
-                                route.NextSequence(), delayedPayload);
+                                route.NextSequence(), delayedPayload, delayedLen);
                             _delayQueue.Enqueue(new DelayedPacket
                             {
                                 Data = delayedPacket.ToBytes(),
@@ -984,8 +1017,9 @@ public sealed class GateServer : IDisposable
                             // the earlier internal certification is a separate phase.
                             var cp = CreateGameSvrClientPacket(mf.Inner, fwdIdent);
                             UpdateClientActionState(session, cp);
-                            var gsBody = new byte[ClientPacket.PackSize + bodyToSend.Length];
-                            Buffer.BlockCopy(cp.GetBuffer(), 0, gsBody, 0, ClientPacket.PackSize);
+                            var gsBodyLen = ClientPacket.PackSize + bodyToSend.Length;
+                            var gsBody = EnsureScratch(ref gsBodyScratch, gsBodyLen);
+                            WriteClientPacketHeader(gsBody.AsSpan(0, ClientPacket.PackSize), cp);
                             if (bodyToSend.Length > 0)
                                 Buffer.BlockCopy(bodyToSend, 0, gsBody, ClientPacket.PackSize, bodyToSend.Length);
                             // Native 2.08 Gate -> M2 uses command 4 for client DATA.
@@ -993,7 +1027,7 @@ public sealed class GateServer : IDisposable
                             // native registration command, so it must never be put on this
                             // wire path.
                             var pkt = CreateGameDataPacket(route.ConnId,
-                                route.NextSequence(), gsBody);
+                                route.NextSequence(), gsBody, gsBodyLen);
                             if (fwdIdent == 1018)
                             {
                                 await WriteGameSvr(pkt.ToBytes(), cts.Token);
@@ -1150,7 +1184,7 @@ public sealed class GateServer : IDisposable
                                         Series = 0
                                     };
                                     var pktBody = new byte[ClientPacket.PackSize + certBody.Length];
-                                    Buffer.BlockCopy(cp.GetBuffer(), 0, pktBody, 0, ClientPacket.PackSize);
+                                    WriteClientPacketHeader(pktBody.AsSpan(0, ClientPacket.PackSize), cp);
                                     Buffer.BlockCopy(certBody, 0, pktBody, ClientPacket.PackSize,
                                         certBody.Length);
                                     var pkt = CreateGameDataPacket(route.ConnId,
@@ -1190,11 +1224,12 @@ public sealed class GateServer : IDisposable
         {
             Trace("GS", $"RelayGameSvr START sharedConnected={_backend.GameConnected}");
 
-            async Task SendClientGameFrame(ushort ident, int recog, ushort param, ushort tag, ushort series, byte[] frameBody, string reason)
+            async Task SendClientGameFrame(ushort ident, int recog, ushort param, ushort tag, ushort series,
+                byte[] frameBody, int bodyOffset, int bodyLength, string reason)
             {
                 byte[]? delayedAreaStateFrame = null;
                 var delayedAreaStateReason = reason;
-                var delayedAreaStatePlen = MobileCodec.INNER_SIZE + frameBody.Length;
+                var delayedAreaStatePlen = MobileCodec.INNER_SIZE + bodyLength;
 
                 if (ident == SM_AREASTATE_CLIENT && recog != 2 && !delayedFirstPassionAreaState)
                 {
@@ -1208,8 +1243,8 @@ public sealed class GateServer : IDisposable
                         Tag = tag,
                         Series = series
                     };
-                    delayedAreaStateFrame = MobileCodec.WriteFrame(delayedInner, frameBody, 0,
-                        MobileCodec.MARKER_DATA);
+                    delayedAreaStateFrame = MobileCodec.WriteFrame(delayedInner, frameBody,
+                        bodyOffset, bodyLength, 0, MobileCodec.MARKER_DATA);
                     delayedAreaStateReason = string.IsNullOrEmpty(reason)
                         ? $"login areaState {originalAreaState} delayed"
                         : $"{reason} login areaState {originalAreaState} delayed";
@@ -1242,8 +1277,9 @@ public sealed class GateServer : IDisposable
                     Tag = tag,
                     Series = series
                 };
-                int plen = MobileCodec.INNER_SIZE + frameBody.Length;
-                var frame = MobileCodec.WriteFrame(inner, frameBody, 0, MobileCodec.MARKER_DATA);
+                int plen = MobileCodec.INNER_SIZE + bodyLength;
+                var frame = MobileCodec.WriteFrame(inner, frameBody, bodyOffset, bodyLength,
+                    0, MobileCodec.MARKER_DATA);
 
                 bool shouldBuffer;
                 bool bufferOverflow = false;
@@ -1258,7 +1294,7 @@ public sealed class GateServer : IDisposable
                             bufferOverflow = true;
                         else
                         {
-                            bufferedGameFrames.Add((ident, frame, frameBody.Length, plen, reason));
+                            bufferedGameFrames.Add((ident, frame, bodyLength, plen, reason));
                             bufferedGameFrameBytes += frame.Length;
                         }
                     }
@@ -1269,26 +1305,26 @@ public sealed class GateServer : IDisposable
 
                 if (shouldBuffer)
                 {
-                    Trace("GS", $"Buffered client ident={ident} body={frameBody.Length}B plen={plen} {reason}".TrimEnd());
+                    Trace("GS", $"Buffered client ident={ident} body={bodyLength}B plen={plen} {reason}".TrimEnd());
                     return;
                 }
 
                 await WriteClientMobileFrame(frame, allocateDataIndex: true);
                 session.TotalSentBytes += frame.Length;
-                if (ident == 31 && frameBody.Length >= 32)
+                if (ident == 31 && bodyLength >= 32)
                 {
                     Trace("GS", $"SM_STRUCK recog={recog} headerHP={param} headerMaxHP={tag} damage={series} " +
-                        $"state={BitConverter.ToInt32(frameBody, 4)} attacker={BitConverter.ToInt32(frameBody, 8)} " +
-                        $"flag={BitConverter.ToInt32(frameBody, 12)} HP={BitConverter.ToInt32(frameBody, 16)} " +
-                        $"MaxHP={BitConverter.ToInt32(frameBody, 20)} MP={BitConverter.ToInt32(frameBody, 24)} " +
-                        $"MaxMP={BitConverter.ToInt32(frameBody, 28)}");
+                        $"state={BitConverter.ToInt32(frameBody, bodyOffset + 4)} attacker={BitConverter.ToInt32(frameBody, bodyOffset + 8)} " +
+                        $"flag={BitConverter.ToInt32(frameBody, bodyOffset + 12)} HP={BitConverter.ToInt32(frameBody, bodyOffset + 16)} " +
+                        $"MaxHP={BitConverter.ToInt32(frameBody, bodyOffset + 20)} MP={BitConverter.ToInt32(frameBody, bodyOffset + 24)} " +
+                        $"MaxMP={BitConverter.ToInt32(frameBody, bodyOffset + 28)}");
                 }
-                Trace("GS", $"=>Client ident={ident} body={frameBody.Length}B plen={plen} {reason}".TrimEnd());
+                Trace("GS", $"=>Client ident={ident} body={bodyLength}B plen={plen} {reason}".TrimEnd());
 
                 if (delayedAreaStateFrame != null)
                 {
                     var delayedFrame = delayedAreaStateFrame;
-                    var delayedBodyLen = frameBody.Length;
+                    var delayedBodyLen = bodyLength;
                     var deferredSend = Task.Run(async () =>
                     {
                         try
@@ -1323,6 +1359,7 @@ public sealed class GateServer : IDisposable
                 _ => ident
             };
 
+            var downClientPacket = new ClientPacket();
             try
             {
                 while (_running)
@@ -1342,25 +1379,22 @@ public sealed class GateServer : IDisposable
 
                     if (pkt.Cmd == Grobal2.GM_DATA && pkt.Payload != null && pkt.Payload.Length >= ClientPacket.PackSize)
                     {
-                        // 从 Payload 提取 ClientPacket + body
-                        var cpBytes = new byte[ClientPacket.PackSize];
-                        Buffer.BlockCopy(pkt.Payload, 0, cpBytes, 0, ClientPacket.PackSize);
-                        var cp = Packets.ToPacket<ClientPacket>(cpBytes);
-                        byte[] body = pkt.Payload.Length > ClientPacket.PackSize
-                            ? new byte[pkt.Payload.Length - ClientPacket.PackSize]
-                            : Array.Empty<byte>();
-                        if (body.Length > 0)
-                            Buffer.BlockCopy(pkt.Payload, ClientPacket.PackSize, body, 0, body.Length);
-
-                        if (cp != null)
+                        var payload = pkt.Payload;
+                        var cp = downClientPacket;
+                        cp.Recog = BinaryPrimitives.ReadInt32LittleEndian(payload);
+                        cp.Ident = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(4, 2));
+                        cp.Param = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(6, 2));
+                        cp.Tag = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(8, 2));
+                        cp.Series = BinaryPrimitives.ReadUInt16LittleEndian(payload.AsSpan(10, 2));
+                        var bodyOffset = ClientPacket.PackSize;
+                        var bodyLength = payload.Length - ClientPacket.PackSize;
+                        UpdatePlayerState(session, cp, payload, bodyOffset, bodyLength);
+                        if (client.Connected)
                         {
-                            UpdatePlayerState(session, cp, body);
-                            if (client.Connected)
-                            {
-                                var clientIdent = ToCurrentClientIdent(cp.Ident);
-                                var mappedReason = clientIdent == cp.Ident ? string.Empty : $"mapped serverIdent={cp.Ident}";
-                                await SendClientGameFrame(clientIdent, cp.Recog, cp.Param, cp.Tag, cp.Series, body, mappedReason);
-                            }
+                            var clientIdent = ToCurrentClientIdent(cp.Ident);
+                            var mappedReason = clientIdent == cp.Ident ? string.Empty : $"mapped serverIdent={cp.Ident}";
+                            await SendClientGameFrame(clientIdent, cp.Recog, cp.Param, cp.Tag, cp.Series,
+                                payload, bodyOffset, bodyLength, mappedReason);
                         }
                     }
                     else if (pkt.Cmd == Grobal2.GM_SERVERUSERINDEX)

@@ -95,6 +95,14 @@ Assert(bridge.CallPlayerFunc("FlyToDynEnvirWithIdx", new List<PasValue>
     "indexed dynamic-room movement failed");
 Assert(ReferenceEquals(player.m_PEnvir, firstEnvironment),
     "indexed movement used a map-name alias instead of the exact environment");
+Assert(bridge.CallPlayerFunc("FlyToDynEnvirWithIdx", new List<PasValue>
+       {
+           PasValue.FromString(roomName), PasValue.FromInt(99999),
+           PasValue.FromInt(10), PasValue.FromInt(10)
+       }, out value) && !value.AsBool(),
+    "FlyToDynEnvirWithIdx inactive index did not return false");
+Assert(ReferenceEquals(player.m_PEnvir, firstEnvironment),
+    "FlyToDynEnvirWithIdx failure moved the player");
 
 var interpreter = CreateInterpreter(bridge);
 Equal(10, interpreter.ExecuteProcedure("ProbeRoomCount").AsInt(),
@@ -133,6 +141,35 @@ Assert(M2Share.DynamicRoomManager.TryGetActiveRoom("NewSky",
         nestedRoomIndex, out nestedEnvironment),
     "nested dynamic PAS activation did not commit its exact room");
 
+var solo = new TPlayObject
+{
+    m_PEnvir = source,
+    m_sCharName = "DynRoomSolo"
+};
+Assert(TryPublishPlayer(source, solo), "no-group solo fixture was not published");
+solo.m_GroupMembers.Clear();
+solo.m_GroupMembers.Add(solo);
+solo.m_GroupOwner = null;
+var soloX = solo.m_nCurrX;
+var soloY = solo.m_nCurrY;
+bridge.CurrentPlayer = solo;
+Assert(bridge.CallPlayerMethod("GroupFlyToDynRoom", new List<PasValue>
+       {
+           PasValue.FromString("NewSky"), PasValue.FromInt(nestedRoomIndex)
+       }), "no-group GroupFlyToDynRoom was not a handled no-op");
+Assert(ReferenceEquals(solo.m_PEnvir, source)
+       && solo.m_nCurrX == soloX && solo.m_nCurrY == soloY,
+    "no-group GroupFlyToDynRoom moved a solo player");
+Assert(bridge.CallPlayerMethod("GroupFlyToDynRoomInRange", new List<PasValue>
+       {
+           PasValue.FromString("NewSky"), PasValue.FromInt(nestedRoomIndex),
+           PasValue.FromInt(8), PasValue.FromInt(8), PasValue.FromInt(2)
+       }), "no-group GroupFlyToDynRoomInRange was not a handled no-op");
+Assert(ReferenceEquals(solo.m_PEnvir, source)
+       && solo.m_nCurrX == soloX && solo.m_nCurrY == soloY,
+    "no-group GroupFlyToDynRoomInRange moved a solo player");
+bridge.CurrentPlayer = player;
+
 var groupMember = new TPlayObject
 {
     m_PEnvir = firstEnvironment,
@@ -150,8 +187,18 @@ player.m_GroupMembers.Clear();
 player.m_GroupMembers.Add(player);
 player.m_GroupMembers.Add(groupMember);
 player.m_GroupMembers.Add(outsideMember);
+player.m_GroupOwner = player;
 groupMember.m_GroupOwner = player;
 outsideMember.m_GroupOwner = player;
+Assert(bridge.CallPlayerMethod("GroupFlyToDynRoomInRange", new List<PasValue>
+       {
+           PasValue.FromString("NewSky"), PasValue.FromInt(99999),
+           PasValue.FromInt(8), PasValue.FromInt(8), PasValue.FromInt(2)
+       }), "inactive-room GroupFlyToDynRoomInRange was not a handled no-op");
+Assert(ReferenceEquals(player.m_PEnvir, firstEnvironment)
+       && ReferenceEquals(groupMember.m_PEnvir, firstEnvironment)
+       && ReferenceEquals(outsideMember.m_PEnvir, source),
+    "inactive-room GroupFlyToDynRoomInRange moved group members");
 Assert(bridge.CallPlayerMethod("GroupFlyToDynRoom", new List<PasValue>
        {
            PasValue.FromString("NewSky"), PasValue.FromInt(nestedRoomIndex)
@@ -199,6 +246,14 @@ Assert(!bridge.CallPlayerFunc("GetDynRoomCnt",
 
 Assert(bridge.CallPlayerFunc("FlyToDynRoom", new List<PasValue>
        {
+           PasValue.FromString("NoSuchDynRoom"), PasValue.FromInt(1),
+           PasValue.FromInt(1)
+       }, out value) && value.AsInt() == -1,
+    "FlyToDynRoom missing room did not return -1");
+Assert(ReferenceEquals(player.m_PEnvir, nestedEnvironment),
+    "FlyToDynRoom failure moved the player");
+Assert(bridge.CallPlayerFunc("FlyToDynRoom", new List<PasValue>
+       {
            PasValue.FromString(roomName), PasValue.FromInt(11),
            PasValue.FromInt(11)
        }, out value), "dynamic-room allocation movement was not dispatched");
@@ -239,7 +294,9 @@ Console.WriteLine("DynRoomProductionServiceCheck PASS "
     + $"definitions={definitions.Count} physical={expectedPhysical} "
     + $"npcs={expectedNpcActors} spawn=loop-exact "
     + "api=interpreter+exact-environment+abi-shadowed "
-    + "nested-PAS=cross-room-activation");
+    + "nested-PAS=cross-room-activation "
+    + "group=no-group-noop+same-envir "
+    + "fly=index-or-minus1+idx-bool");
 
 static int ObjectManagerActorCount(ObjectManager manager)
 {

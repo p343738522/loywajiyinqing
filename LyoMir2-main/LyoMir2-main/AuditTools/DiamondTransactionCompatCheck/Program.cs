@@ -197,15 +197,20 @@ Equal(0, dispatchPlayer.m_MsgList.Count,
     "invalid TakeDiamond dispatch emitted a message");
 Equal(0, M2Share.LogStringList.Count,
     "invalid TakeDiamond dispatch emitted a log");
-Assert(!bridge.CallPlayerMethod("TakeDiamond", new List<PasValue>
-    { PasValue.FromInt(2), PasValue.Nil }),
-    "TakeDiamond method dispatcher was opened");
+Assert(bridge.CallPlayerMethod("TakeDiamond", new List<PasValue>
+    { PasValue.FromInt(2) }),
+    "TakeDiamond count-only method was not dispatched");
+Equal(3, dispatchPile.Dura,
+    "TakeDiamond count-only method did not debit the requested quantity");
+AssertSuccessMessages(dispatchPlayer, "method dispatch");
+dispatchPlayer.m_MsgList.Clear();
+M2Share.LogStringList.Clear();
 Assert(bridge.CallPlayerFunc("TakeDiamond", new List<PasValue>
     { PasValue.FromInt(2), PasValue.Nil }, out var dispatchResult),
     "TakeDiamond exact-two function was not dispatched");
 Assert(dispatchResult.Type == PasValueType.Boolean && dispatchResult.AsBool(),
     "TakeDiamond exact-two function did not return True");
-Equal(3, dispatchPile.Dura,
+Equal(1, dispatchPile.Dura,
     "TakeDiamond exact-two function did not debit the requested quantity");
 AssertSuccessMessages(dispatchPlayer, "function dispatch");
 
@@ -243,6 +248,12 @@ RequireMatches(source, "WeightChanged\\(\\);", 1,
 Assert(!source.Contains("m_nNativeDiamondCache", StringComparison.Ordinal),
     "TakeDiamond directly mutates the transient diamond cache");
 RequireMatches(bridgeSource,
+    "case \\\"takediamond\\\":(?:\\s*//[^\\r\\n]*)?\\s*" +
+    "if \\(args\\.Count >= 1\\)\\s*" +
+    "_ = CurrentPlayer\\.TakeNativeDiamond\\(args\\[0\\]\\.AsInt\\(\\)\\);\\s*" +
+    "return true;",
+    1, "TakeDiamond CallPlayerMethod count-only dispatch");
+RequireMatches(bridgeSource,
     "case \\\"takediamond\\\":\\s*if \\(args\\.Count != 2\\) return false;\\s*" +
     "result = PasValue\\.FromBool\\(\\s*" +
     "CurrentPlayer\\.TakeNativeDiamond\\(args\\[0\\]\\.AsInt\\(\\)\\)\\);\\s*" +
@@ -263,7 +274,7 @@ Assert(!functionSource.Contains("args[1]", StringComparison.Ordinal),
 Console.WriteLine(
     "PASS TakeDiamond invalid=silent positive=10054 preflight=atomic commit=tail-to-head " +
     "ordinary=count pile=StdMode152/runtime logs=type10/Cardinal/NPC WeightChanged=once " +
-    "dispatch=CallPlayerFunc/exact2/Npc-unread method=closed");
+    "dispatch=CallPlayerFunc/exact2/Npc-unread method=count-only");
 return;
 
 bool Take(TPlayObject player, int amount)

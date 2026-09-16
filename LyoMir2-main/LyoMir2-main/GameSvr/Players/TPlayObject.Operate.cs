@@ -147,6 +147,13 @@ namespace GameSvr
             if (npc.m_PEnvir == m_PEnvir && Math.Abs(npc.m_nCurrX - m_nCurrX) < 15 && Math.Abs(npc.m_nCurrY - m_nCurrY) < 15 || npc.m_boIsHide)
             {
                 var selectMsg = (sMsg ?? string.Empty).Trim();
+                // @labels: UserSelect → GotoLabel (vmt+0x44). Non-@ text is the
+                // sub_6B8CC4 client-invoked function-name branch (validScriptFunc.txt).
+                if (selectMsg.Length > 0 && selectMsg[0] != '@')
+                {
+                    TryNativeScriptInteractionFunction(selectMsg);
+                    return;
+                }
                 npc.UserSelect(this, selectMsg);
             }
         }

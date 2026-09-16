@@ -31,7 +31,7 @@ namespace GameSvr
     /// (Header, string). Trigger-side fields feeding Recog/Param/Tag are taken as
     /// parameters (no shared method body is touched — anti-conflict rule).
     ///
-    /// The 10 fail-closed idents of this batch (no builder, constant + gap only) are
+    /// The 9 fail-closed idents of this batch (no builder, constant + gap only) are
     /// documented in the trailing block; their bodies/frames are not evaluable at a
     /// mapped [0x250]/[0x254] slot without inventing bytes.
     /// </summary>
@@ -104,6 +104,14 @@ namespace GameSvr
         //   e.g. @0x6BF9A7 (Tag=1,Recog=1); @0x6BFB24 (Tag=2,Recog=0); @0x6BFBE8 (Tag=0,Recog=0).
         internal static (ClientPacket Header, byte[] Body) BuildSm4035(int recog, ushort tag)
             => (Grobal2.MakeDefaultMsg(Grobal2.SM_4035, recog, 0, tag, 0), Array.Empty<byte>());
+
+        // SM 4032 (0xFC0) — send [obj+0x254] @0x746D18 (CM 4125 worker 0x746C34).
+        // Recog=count, Param=0, Tag=word[[0x7D5AEC]] (4 at 0x7553F9), Series=0.
+        // Body = count*0x2B rows from NativeShenYouAttributeConfig ([[0x7D6014]]).
+        internal static (ClientPacket Header, byte[] Body) BuildSm4032(
+            int recog, ushort tag, byte[] body)
+            => (Grobal2.MakeDefaultMsg(Grobal2.SM_4032, recog, 0, tag, 0),
+                body ?? Array.Empty<byte>());
 
         // SM 4038 (0xFC6) — send [obj+0x250] @0x746D3B / @0x746D56. Empty body, Recog=0,
         // Tag=Series=0; Param is a 0/1 flag off the global [[0x7D6938]] byte:
@@ -188,10 +196,6 @@ namespace GameSvr
         //      frame is outside the two mapped send conventions -> not derivable.
         //  SM 4363 (0x110B) @0x767158 — same: mov dx,0x110B then `call [obj+0xE0]`
         //      (0x767160). Non-slot dispatch -> not derivable.
-        //  SM 4032 (0xFC0) @0x746D18 slot 0x254 — Buf=[ebp-8],Len=[ebp-0xC] is a
-        //      record from the [[0x7D6014]] table (CM 4125 worker 0x746C34); the
-        //      table's 0x2B(43)-byte record format is undefined (matches
-        //      NativeCmTailFailClosed.cs CM 4125 note).
         //  SM 4033 (0xFC1) @0x747362/@0x747380 slot 0x254 — Buf=[ebp-0x20],Len=0x20
         //      (32 bytes). The record is the state-0x36 spirit block copied from
         //      [self+0x5A8] (20 bytes @0x74733E) plus a computed dword; that record

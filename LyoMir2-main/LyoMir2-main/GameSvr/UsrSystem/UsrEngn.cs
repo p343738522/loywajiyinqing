@@ -3296,7 +3296,7 @@ namespace GameSvr
                 // classref [0x66E8EC] → ctor 0x674C44。case body 20 字节，无额外 RNG：
                 //   67A921 B2 01 / A1 EC E8 66 00 / E8 17 A3 FF FF / 89 45 F8 / E9 0A 04 00 00
                 // 归属唯一：classref 全 CODE 段 1 个加载点、ctor 1 个 E8 调用者。
-                // 详见 AttackIceTower.cs（含 Die/Run/+0xC8 三处 fail-closed 说明）。
+                // 详见 AttackIceTower.cs（Die 仍 fail-closed；Run/+0xC8 NativeMakePosion 已接）。
                 // 原先落 default(0x67AE5E) → nil，攻击冰塔不出现。
                 case 145:
                     Cert = new AttackIceTower();

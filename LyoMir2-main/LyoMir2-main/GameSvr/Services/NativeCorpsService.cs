@@ -208,17 +208,21 @@ namespace GameSvr.Services
         internal int CorpsCount => _corpsById.Count;
         internal int GildCount => _gildById.Count;
 
-        // sub_6A52BC / request-manager[+0x24].  Notices are runtime-only;
-        // the login sender drains them and encodes count * 17 bytes.
+        // sub_6A52BC / request-manager[+0x24] when the recipient is offline.
+        // Online applicants get SM 4612 immediately (sub_7077C4 / 0x708520 /
+        // 0x708004) and must not also land in the login queue.
         internal void QueuePendingNotice(long recipientId, byte noticeType,
             string text)
         {
-            _requestLedger.EnqueueNotice(recipientId,
-                new NativeGildOfflineNotice
-                {
-                    NoticeType = noticeType,
-                    Text = text ?? string.Empty
-                });
+            var notice = new NativeGildOfflineNotice
+            {
+                NoticeType = noticeType,
+                Text = text ?? string.Empty
+            };
+            if (TPlayObject.TrySendNativePendingNoticeOnline(recipientId,
+                    notice))
+                return;
+            _requestLedger.EnqueueNotice(recipientId, notice);
         }
 
         internal byte[] TakePendingNoticesBody(long recipientId)
@@ -2130,10 +2134,8 @@ namespace GameSvr.Services
         // (Residual: the 23 `(**rec)()` guard may be a separate already-processed flag beyond the cascade's
         // WrongType=23 — rides codec-fidelity's next idat; WrongType likely already covers it.)
         //
-        // DEFERRED (FLAGGED): the applicant notify (native SM 4612 if online, else the offline-notice queue
-        // sub_6A52BC) is NOT sent here — it needs the SM 4612 reply-frame confirmation + the offline-notice
-        // store (unmodeled). The request removal (the observable state change) is complete; the applicant
-        // currently learns the outcome only on re-query. Follow-up.
+        // Applicant notify: SM 4612 if the requester is online, else the
+        // offline-notice queue sub_6A52BC (drained on next login).
         //
         // TWO REQUEST FAMILIES via the GENERIC 4572 refuse + the caller's role-strategy cascade
         // (codec-fidelity: NO separate union opcode; 4572 = sub_6F6340 -> role slot +0x50). JOIN requests
@@ -2145,8 +2147,8 @@ namespace GameSvr.Services
         // Lookup = the per-guild ledger by applicant CharID (= sub_6A5284 Self[+0x1C]);
         // guild[+0x24] is the president's UI copy only. break-union (4574) is unrelated (dissolves an
         // established relation-1 alliance). On a successful refuse, the native applicant notification
-        // is now queued with the exact SM-4612 tag (join-gild=2, union=3) and target-gild ShortString.
-        // Direct online delivery remains a separate native call site; the queued record is consumed on login.
+        // uses the exact SM-4612 tag (join-gild=2, union=3) and target-gild ShortString.
+        // Online recipients are pushed immediately; offline records are consumed on login.
         internal int ApplyGildRefuseRequest(long operatorId,
             long uniqueRequestId)
         {

@@ -14,6 +14,7 @@ namespace LoginGate.Core
         {
             var passed = new List<string>();
             Run("client CONNECT fixture", TestConnect, passed);
+            Run("client encode scratch matches heap encode", TestEncodeScratch, passed);
             Run("client 4001 fixture", TestServerList, passed);
             Run("client 4002 selection and jump fixtures", TestSelectionAndJump, passed);
             Run("client endpoint bounds", TestClientBounds, passed);
@@ -40,6 +41,19 @@ namespace LoginGate.Core
             Check(LoginGateWireProtocol.TryEncodeClientFrame(created,
                 out var encoded, out error), error);
             Bytes(fixture, encoded, "CONNECT bytes");
+        }
+
+        private static void TestEncodeScratch()
+        {
+            var created = LoginGateWireProtocol.CreateConnectRequest(180);
+            Check(LoginGateWireProtocol.TryEncodeClientFrame(created,
+                out var encoded, out var error), error);
+            var scratch = new byte[encoded.Length + 16];
+            scratch.AsSpan().Fill(0xCC);
+            Check(LoginGateWireProtocol.TryEncodeClientFrame(created, scratch,
+                out var written, out error), error);
+            Equal(encoded.Length, written, "scratch written length");
+            Bytes(encoded, scratch.AsSpan(0, written).ToArray(), "scratch encode bytes");
         }
 
         private static void TestServerList()

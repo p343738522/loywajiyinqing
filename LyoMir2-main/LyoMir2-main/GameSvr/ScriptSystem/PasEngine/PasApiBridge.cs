@@ -429,6 +429,48 @@ namespace GameSvr.PasEngine
             new HashSet<string>(StringComparer.Ordinal);
 
         /// <summary>
+        /// Hot-path PAS APIs that used to <c>MainOutMessage</c> on every call.
+        /// One line per key for the lifetime of the process, same shape as
+        /// <see cref="ReportedUnknownPasNames"/> / NativeCm*FailClosed.Drop.
+        /// </summary>
+        private static readonly HashSet<string> ReportedHotPathLogs =
+            new HashSet<string>(StringComparer.Ordinal);
+
+        private static void LogHotPathOnce(string key, string message)
+        {
+            lock (ReportedHotPathLogs)
+            {
+                if (!ReportedHotPathLogs.Add(key))
+                    return;
+            }
+            M2Share.MainOutMessage(message);
+        }
+
+        // ProcessHumans is single-threaded; nested PAS may Rent again, so this is a
+        // per-thread stack, not a single shared list.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _actorScanPool;
+
+        private static List<TBaseObject> RentActorScanList()
+        {
+            var pool = _actorScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(64);
+        }
+
+        private static void ReturnActorScanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_actorScanPool ??= new Stack<List<TBaseObject>>()).Push(list);
+        }
+
+        /// <summary>
         /// Observability hook for the PAS dispatch <c>default:</c> arms — i.e. the point at
         /// which a name has fallen through EVERY surface the interpreter is willing to try
         /// and the bridge therefore has no <c>case</c> for it at all. This is the "silent
@@ -1920,14 +1962,21 @@ namespace GameSvr.PasEngine
                     {
                         int range = args.Count >= 1 ? args[0].AsInt() : 5;
                         int count = 0;
-                        var objList = new List<TBaseObject>();
-                        if (CurrentPlayer.m_PEnvir.GetMapBaseObjects((short)CurrentPlayer.m_nCurrX, (short)CurrentPlayer.m_nCurrY, range, objList))
+                        var objList = RentActorScanList();
+                        try
                         {
-                            foreach (var obj in objList)
+                            if (CurrentPlayer.m_PEnvir.GetMapBaseObjects((short)CurrentPlayer.m_nCurrX, (short)CurrentPlayer.m_nCurrY, range, objList))
                             {
-                                if (obj != null && obj.m_btRaceServer >= Grobal2.RC_MONSTER && !obj.m_boDeath)
-                                    count++;
+                                foreach (var obj in objList)
+                                {
+                                    if (obj != null && obj.m_btRaceServer >= Grobal2.RC_MONSTER && !obj.m_boDeath)
+                                        count++;
+                                }
                             }
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(objList);
                         }
                         M2Share.MainOutMessage($"[PasBridge] GetAroundMonNum: {count} monsters in range {range}");
                     }
@@ -2038,7 +2087,13 @@ namespace GameSvr.PasEngine
                     return true;
 
                 case "takediamond":
+                    // Native procedure is count-only; the function ABI's extra Npc is unread.
+                    if (args.Count >= 1)
+                        _ = CurrentPlayer.TakeNativeDiamond(args[0].AsInt());
+                    return true;
+
                 case "adddiamond":
+                    // Native AddDiamond mutator is unmapped.
                     return RejectUnsupportedNativeApi();
 
                 case "scriptrequestaddybnum":
@@ -2076,7 +2131,9 @@ namespace GameSvr.PasEngine
                         if (destroyed > 0)
                         {
                             CurrentPlayer.WeightChanged();
-                            M2Share.MainOutMessage($"[PasBridge] ScriptDestroyItem: destroyed {destroyed}x {itemName} for {CurrentPlayer.m_sCharName}");
+                            LogHotPathOnce(
+                                "scriptdestroyitem:" + itemName,
+                                $"[PasBridge] ScriptDestroyItem: destroyed {destroyed}x {itemName} for {CurrentPlayer.m_sCharName}");
                         }
                     }
                     return true;
@@ -2472,8 +2529,16 @@ namespace GameSvr.PasEngine
                     return true;
 
                 case "addglorypoint":
+                    if (args.Count != 1) return false;
+                    _ = TryAddNativeGloryPoint(args[0].AsInt());
+                    return true;
+
                 case "decglorypoint":
-                    return RejectUnsupportedNativeApi();
+                    if (args.Count != 5) return false;
+                    _ = CurrentPlayer.DecNativeGloryPoint(
+                        args[0].AsInt(), args[1].AsInt(), args[2].AsInt(),
+                        args[3].AsBool(), args[4].AsString());
+                    return true;
 
                 case "addguildpoint":
                     return RejectUnsupportedNativeApi();
@@ -2566,10 +2631,17 @@ namespace GameSvr.PasEngine
                         var targetMap = args[0].AsString();
                         if (CurrentPlayer.m_PEnvir != null)
                         {
-                            var nearby = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(CurrentPlayer.m_PEnvir, CurrentPlayer.m_nCurrX, CurrentPlayer.m_nCurrY, 10, nearby);
-                            foreach (var obj in nearby)
-                            { if (obj is TPlayObject p && p != CurrentPlayer) p.SpaceMove(targetMap, (short)CurrentPlayer.m_nCurrX, (short)CurrentPlayer.m_nCurrY, 0); }
+                            var nearby = RentActorScanList();
+                            try
+                            {
+                                M2Share.UserEngine.GetMapRageHuman(CurrentPlayer.m_PEnvir, CurrentPlayer.m_nCurrX, CurrentPlayer.m_nCurrY, 10, nearby);
+                                foreach (var obj in nearby)
+                                { if (obj is TPlayObject p && p != CurrentPlayer) p.SpaceMove(targetMap, (short)CurrentPlayer.m_nCurrX, (short)CurrentPlayer.m_nCurrY, 0); }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(nearby);
+                            }
                         }
                         CurrentPlayer.SpaceMove(targetMap, (short)CurrentPlayer.m_nCurrX, (short)CurrentPlayer.m_nCurrY, 0);
                     }
@@ -2631,6 +2703,8 @@ namespace GameSvr.PasEngine
                     return true;
 
                 case "groupflytodynroom":
+                    // GroupFlyToDynRoom = native sub_6E06D8: [self+0xA80]==0
+                    // (C# m_GroupOwner null) silent no-op; else sub_727884.
                     if (args.Count != 2
                         || M2Share.DynamicRoomService?.IsInitialized != true)
                         return false;
@@ -2953,7 +3027,9 @@ namespace GameSvr.PasEngine
                     {
                         int newLevel = Math.Max(1, Math.Min(ushort.MaxValue, args[0].AsInt()));
                         int oldLevel = CurrentPlayer.m_Abil.Level;
-                        M2Share.MainOutMessage($"[SetLevel] {CurrentPlayer.m_sCharName}: {oldLevel} -> {newLevel}");
+                        LogHotPathOnce(
+                            "setplayerlevel:" + CurrentPlayer.m_sCharName,
+                            $"[SetLevel] {CurrentPlayer.m_sCharName}: {oldLevel} -> {newLevel}");
                         CurrentPlayer.m_Abil.Level = (ushort)newLevel;
                         CurrentPlayer.RecalcAbilitys();
                         CurrentPlayer.SendMsg(CurrentPlayer, Grobal2.RM_ABILITY, 0, 0, 0, 0, "");
@@ -2985,7 +3061,9 @@ namespace GameSvr.PasEngine
                     return true;
 
                 case "givehumlevelbuffer":
-                    // A permanent V-variable cannot replace the native timed ability buffer.
+                    // Native compiler signature is function GiveHumLevelBuffer(target,
+                    // value): Integer (sub_6F28B0). No Delphi procedure-form RTTI.
+                    // Executor sub_746870 is still dormant. Keep procedure reject.
                     return RejectUnsupportedNativeApi();
 
                 case "unshutupself":
@@ -3359,10 +3437,13 @@ namespace GameSvr.PasEngine
                 //   (0x615F6E Current := Min(Current+delta, Max) + 0x615F72 dirty := 1),
                 //   且**静默截断** —— 只剩 10 余量时卖 500 仍返回 1 并按 500 全额付荣耀;
                 //   (b) 它在扣物品**之前**提交,故 -4 会留下已改的仓储(原生自身的不一致)。
-                // 未接线原因:上述 (a)(b) 是钱物路径上的原生不一致,须与仓储子系统
-                //   (SuperMerchant.ini 状态 + dirty 落盘)一并落地才能保证守恒 ⇒ 保持拒绝。
+                // 仓储(NativeSuperMerchantManager)与荣耀(TryAddNativeGloryPoint)均已建模,
+                // 与 QueryGloryPointByGoodsNum 同批落地。元宝买入仍关(见下)。
                 case "sellgoodstogetglorypoint":
-                    return RejectUnsupportedNativeApi();
+                    if (args.Count != 2) return false;
+                    _ = SellNativeSuperMerchantGoods(args[0].AsInt(),
+                        args[1].AsInt());
+                    return true;
 
                 // ConsumeYBToBuyGoods sub_6E5104:元宝侧,用**另一对**挂单
                 // +0x9D4/+0x9D8(由 QueryGoodsNumByYBNum sub_6E4F88 写)。
@@ -3375,6 +3456,16 @@ namespace GameSvr.PasEngine
                 //   sub_6D5344@0x6D56E0 发放的**(读 +0x9DC 校验 1..2 → sub_6C87B4 给物)。
                 //   只实现本函数 = 扣了仓储却永不发货 = 物品丢失。两半须同时落地 ⇒
                 //   保持拒绝(且 [player+0x760] 元宝在本移植中是外部只读的)。
+                // MISSING HOOK (keep closed until both exist):
+                //   Ident-125 reply body: none for sel=0x2742=10050.
+                //     NewBieGift 125/1125 (YbDbNewBieGiftConsumeProtocol Op=10100)
+                //     is a different dormant txn; NeedKeyBox ident 125 uses
+                //     selector 10000 and HasExactYbDb125Transport=false.
+                //     YbDbClient.cs response loop has no 1125 / sel-10050 arm.
+                //   Delivery executor: sub_6D5344 SuperMerchant branch @0x6D56E0
+                //     — no C# type. TPlayObject.NativeSuperMerchant.cs has sell
+                //     hang tags +0x9CC/+0x9D0 only; NativeSuperMerchant helper
+                //     is Query+Sell only. No SuperMerchant SM builder.
                 case "consumeybtobuygoods":
                     return RejectUnsupportedNativeApi();
 
@@ -3384,11 +3475,13 @@ namespace GameSvr.PasEngine
                 // 0x6E4F72 sub_61617C 得荣耀值 → **返回该值**(不是无返回值的过程),
                 // 同时把挂单写入 0x6E4F77 [ebx+0x9CC]=goodsType、0x6E4F7D [ebx+0x9D0]=荣耀值。
                 // 注意原生此处**缺少 [0x7D6D10] 的空指针门**(两个兄弟 0x6E4FDC/0x6E5130 有),
-                // 即经理构造失败时原生会 AV。
-                // 未接线原因:它的唯一意义是为 SellGoodsToGetGloryPoint 建立挂单,
-                // 单独接线会让"报价"写入一个永不被消费的挂单 ⇒ 与卖出侧同批处理。
+                // 即经理构造失败时原生会 AV。C# 经理为空返回 0、不写挂单。
+                // 与 SellGoodsToGetGloryPoint 同批落地,避免报价挂单永不被消费。
                 case "queryglorypointbygoodsnum":
-                    return RejectUnsupportedNativeApi();
+                    if (args.Count != 2) return false;
+                    _ = QueryNativeSuperMerchantGloryQuote(args[0].AsInt(),
+                        args[1].AsInt());
+                    return true;
 
                 // AddToBuyGoodsLogByScript sub_6FB3A0:向购物日志追加一条记录(ret 8)。
                 case "addtobuygoodslogbyscript":
@@ -3401,6 +3494,8 @@ namespace GameSvr.PasEngine
                     return RejectUnsupportedNativeApi();
 
                 // ShowCurrentBless sub_6EB0BC:格式化并经 vtable +0x250(dx=0xCEE)发送祝福状态。
+                // Function face already forwards to ShowCurrentNativeBless.
+                // No Delphi procedure-form RTTI in-repo; keep procedure reject.
                 case "showcurrentbless":
                     return RejectUnsupportedNativeApi();
 
@@ -3911,9 +4006,16 @@ namespace GameSvr.PasEngine
                 case "checkcurrmapmon":
                     if (CurrentPlayer.m_PEnvir != null)
                     {
-                        var monsterList = new List<TBaseObject>();
-                        M2Share.UserEngine.GetMapMonster(CurrentPlayer.m_PEnvir, monsterList);
-                        result = PasValue.FromInt(monsterList.Count);
+                        var monsterList = RentActorScanList();
+                        try
+                        {
+                            M2Share.UserEngine.GetMapMonster(CurrentPlayer.m_PEnvir, monsterList);
+                            result = PasValue.FromInt(monsterList.Count);
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(monsterList);
+                        }
                     }
                     return true;
 
@@ -3930,16 +4032,23 @@ namespace GameSvr.PasEngine
                         {
                             var monName = args[1].AsString();
                             int count = 0;
-                            var monsterList = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapMonster(map, monsterList);
-                            for (int i = 0; i < monsterList.Count; i++)
+                            var monsterList = RentActorScanList();
+                            try
                             {
-                                var mon = monsterList[i];
-                                if (mon != null && mon.m_sCharName != null &&
-                                    mon.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
-                                    count++;
+                                M2Share.UserEngine.GetMapMonster(map, monsterList);
+                                for (int i = 0; i < monsterList.Count; i++)
+                                {
+                                    var mon = monsterList[i];
+                                    if (mon != null && mon.m_sCharName != null &&
+                                        mon.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                        count++;
+                                }
+                                result = PasValue.FromInt(count);
                             }
-                            result = PasValue.FromInt(count);
+                            finally
+                            {
+                                ReturnActorScanList(monsterList);
+                            }
                         }
                     }
                     return true;
@@ -4714,9 +4823,16 @@ namespace GameSvr.PasEngine
                     {
                         var dm = args[0].AsString(); var dx = (short)args[1].AsInt(); var dy = (short)args[2].AsInt();
                         var hl = (int)args[3].AsInt(); var op = args[6].AsInt();
-                        var hl2 = new List<TBaseObject>();
-                        M2Share.UserEngine.GetMapRageHuman(CurrentPlayer.m_PEnvir, 0, 0, 1000, hl2);
-                        foreach (var o in hl2) { if (o is TPlayObject pl && ((op == 0 && pl.m_Abil.Level >= hl) || (op != 0 && pl.m_Abil.Level == hl))) pl.SpaceMove(dm, dx, dy, 0); }
+                        var hl2 = RentActorScanList();
+                        try
+                        {
+                            M2Share.UserEngine.GetMapRageHuman(CurrentPlayer.m_PEnvir, 0, 0, 1000, hl2);
+                            foreach (var o in hl2) { if (o is TPlayObject pl && ((op == 0 && pl.m_Abil.Level >= hl) || (op != 0 && pl.m_Abil.Level == hl))) pl.SpaceMove(dm, dx, dy, 0); }
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(hl2);
+                        }
                                             }
                     return true;
 
@@ -5048,10 +5164,15 @@ namespace GameSvr.PasEngine
                     return true;
 
                 // 大药商人 荣耀点/元宝 兑换梯度(见 CallPlayerMethod 注释)。
+                // Query+Sell 同批落地; ConsumeYBToBuyGoods 仍关。
+                // MISSING HOOK: Ident-125 reply body (sel=0x2742=10050) +
+                // delivery executor sub_6D5344@0x6D56E0. No C# landing
+                // (TPlayObject.NativeSuperMerchant.cs sell hang tags only;
+                // YbDbClient has no 1125/sel-10050 arm; no SM builder).
                 case "queryglorypointbygoodsnum":
-                    return RejectUnsupportedNativeApi(out result);
+                    return CallQueryGloryPointByGoodsNum(args, out result);
                 case "sellgoodstogetglorypoint":
-                    return RejectUnsupportedNativeApi(out result);
+                    return CallSellGoodsToGetGloryPoint(args, out result);
                 case "consumeybtobuygoods":
                     return RejectUnsupportedNativeApi(out result);
                 case "addtobuygoodslogbyscript":
@@ -5120,6 +5241,7 @@ namespace GameSvr.PasEngine
                 case "systemmsg":
                     return RejectUnsupportedNativeApi(out result);
                 case "showcurrentbless":
+                    // Procedure face stays rejected: no Delphi procedure-form RTTI.
                     CurrentPlayer.ShowCurrentNativeBless();
                     return true;
                 case "taskdialog":
@@ -5278,12 +5400,19 @@ namespace GameSvr.PasEngine
                         var color = args.Count >= 2 ? (MsgType)args[1].AsInt() : MsgType.Notice;
                         if (CurrentNpc?.m_PEnvir != null)
                         {
-                            var mapHumans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, mapHumans);
-                            foreach (var human in mapHumans)
+                            var mapHumans = RentActorScanList();
+                            try
                             {
-                                if (human is TPlayObject player)
-                                    player.SysMsg(msg, MsgColor.Green, color);
+                                M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, mapHumans);
+                                foreach (var human in mapHumans)
+                                {
+                                    if (human is TPlayObject player)
+                                        player.SysMsg(msg, MsgColor.Green, color);
+                                }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(mapHumans);
                             }
                         }
                         else
@@ -5757,12 +5886,19 @@ namespace GameSvr.PasEngine
                         var desY = (short)args[3].AsInt();
                         if (srcMap != null)
                         {
-                            var humans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
-                            foreach (var obj in humans)
+                            var humans = RentActorScanList();
+                            try
                             {
-                                if (obj is TPlayObject player)
-                                    player.SpaceMove(desMapName, desX, desY, 0);
+                                M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
+                                foreach (var obj in humans)
+                                {
+                                    if (obj is TPlayObject player)
+                                        player.SpaceMove(desMapName, desX, desY, 0);
+                                }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(humans);
                             }
                         }
                     }
@@ -5781,14 +5917,21 @@ namespace GameSvr.PasEngine
                         var maxLevel = args[5].AsInt();
                         if (srcMap != null)
                         {
-                            var humans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
-                            foreach (var obj in humans)
+                            var humans = RentActorScanList();
+                            try
                             {
-                                if (obj is TPlayObject player &&
-                                    player.m_Abil.Level >= minLevel &&
-                                    player.m_Abil.Level <= maxLevel)
-                                    player.SpaceMove(desMapName, desX, desY, 0);
+                                M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
+                                foreach (var obj in humans)
+                                {
+                                    if (obj is TPlayObject player &&
+                                        player.m_Abil.Level >= minLevel &&
+                                        player.m_Abil.Level <= maxLevel)
+                                        player.SpaceMove(desMapName, desX, desY, 0);
+                                }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(humans);
                             }
                         }
                     }
@@ -6188,15 +6331,22 @@ namespace GameSvr.PasEngine
                         var map = M2Share.MapManager.FindMap(mapName);
                         if (map != null)
                         {
-                            var humans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(map, 0, 0, 1000, humans);
-                            foreach (var obj in humans)
+                            var humans = RentActorScanList();
+                            try
                             {
-                                if (obj is TPlayObject player && obj.m_sCharName != null
-                                    && obj.m_sCharName.IndexOf(npcName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                M2Share.UserEngine.GetMapRageHuman(map, 0, 0, 1000, humans);
+                                foreach (var obj in humans)
                                 {
-                                    player.SendRefMsg(Grobal2.RM_DISAPPEAR, 0, 0, 0, 0, "");
+                                    if (obj is TPlayObject player && obj.m_sCharName != null
+                                        && obj.m_sCharName.IndexOf(npcName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        player.SendRefMsg(Grobal2.RM_DISAPPEAR, 0, 0, 0, 0, "");
+                                    }
                                 }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(humans);
                             }
                         }
                     }
@@ -6211,15 +6361,22 @@ namespace GameSvr.PasEngine
                         var map = M2Share.MapManager.FindMap(mapName);
                         if (map != null)
                         {
-                            var humans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(map, 0, 0, 1000, humans);
-                            foreach (var obj in humans)
+                            var humans = RentActorScanList();
+                            try
                             {
-                                if (obj is TPlayObject player && obj.m_sCharName != null
-                                    && obj.m_sCharName.IndexOf(npcName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                M2Share.UserEngine.GetMapRageHuman(map, 0, 0, 1000, humans);
+                                foreach (var obj in humans)
                                 {
-                                    player.SendRefMsg(Grobal2.RM_ALIVE, obj.m_btDirection, obj.m_nCurrX, obj.m_nCurrY, 0, "");
+                                    if (obj is TPlayObject player && obj.m_sCharName != null
+                                        && obj.m_sCharName.IndexOf(npcName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        player.SendRefMsg(Grobal2.RM_ALIVE, obj.m_btDirection, obj.m_nCurrX, obj.m_nCurrY, 0, "");
+                                    }
                                 }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(humans);
                             }
                         }
                     }
@@ -6232,12 +6389,19 @@ namespace GameSvr.PasEngine
                     {
                         var msg = args[0].AsString();
                         var iType = args.Count >= 2 ? args[1].AsInt() : 1;
-                        var humans = new List<TBaseObject>();
-                        M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, humans);
-                        foreach (var obj in humans)
+                        var humans = RentActorScanList();
+                        try
                         {
-                            if (obj is TPlayObject player)
-                                player.SysMsg(msg, MsgColor.Red, MsgType.Castle);
+                            M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, humans);
+                            foreach (var obj in humans)
+                            {
+                                if (obj is TPlayObject player)
+                                    player.SysMsg(msg, MsgColor.Red, MsgType.Castle);
+                            }
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(humans);
                         }
                     }
                     return true;
@@ -6495,17 +6659,24 @@ namespace GameSvr.PasEngine
                         var srcMap = M2Share.MapManager.FindMap(sSrcMap);
                         if (srcMap != null)
                         {
-                            var humans = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
-                            int moved = 0;
-                            foreach (var obj in humans)
+                            var humans = RentActorScanList();
+                            try
                             {
-                                if (moved >= num) break;
-                                if (obj is TPlayObject player)
+                                M2Share.UserEngine.GetMapRageHuman(srcMap, 0, 0, 1000, humans);
+                                int moved = 0;
+                                foreach (var obj in humans)
                                 {
-                                    player.SpaceMove(CurrentNpc.m_sMapName, CurrentNpc.m_nCurrX, CurrentNpc.m_nCurrY, 0);
-                                    moved++;
+                                    if (moved >= num) break;
+                                    if (obj is TPlayObject player)
+                                    {
+                                        player.SpaceMove(CurrentNpc.m_sMapName, CurrentNpc.m_nCurrX, CurrentNpc.m_nCurrY, 0);
+                                        moved++;
+                                    }
                                 }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(humans);
                             }
                         }
                     }
@@ -7078,12 +7249,19 @@ namespace GameSvr.PasEngine
                         var moveAllMap = args[0].AsString();
                         var moveAllX = (short)args[1].AsInt();
                         var moveAllY = (short)args[2].AsInt();
-                        var moveAllList = new List<TBaseObject>();
-                        M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, moveAllList);
-                        foreach (var moveAllObj in moveAllList)
+                        var moveAllList = RentActorScanList();
+                        try
                         {
-                            if (moveAllObj is TPlayObject moveAllPlayer)
-                                moveAllPlayer.SpaceMove(moveAllMap, moveAllX, moveAllY, 0);
+                            M2Share.UserEngine.GetMapRageHuman(CurrentNpc.m_PEnvir, 0, 0, 1000, moveAllList);
+                            foreach (var moveAllObj in moveAllList)
+                            {
+                                if (moveAllObj is TPlayObject moveAllPlayer)
+                                    moveAllPlayer.SpaceMove(moveAllMap, moveAllX, moveAllY, 0);
+                            }
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(moveAllList);
                         }
                     }
                     return true;
@@ -7236,16 +7414,23 @@ namespace GameSvr.PasEngine
                         {
                             var monName = args[1].AsString();
                             int count = 0;
-                            var monsterList = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapMonster(map, monsterList);
-                            for (int i = 0; i < monsterList.Count; i++)
+                            var monsterList = RentActorScanList();
+                            try
                             {
-                                var mon = monsterList[i];
-                                if (mon != null && mon.m_sCharName != null &&
-                                    mon.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
-                                    count++;
+                                M2Share.UserEngine.GetMapMonster(map, monsterList);
+                                for (int i = 0; i < monsterList.Count; i++)
+                                {
+                                    var mon = monsterList[i];
+                                    if (mon != null && mon.m_sCharName != null &&
+                                        mon.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                        count++;
+                                }
+                                result = PasValue.FromInt(count);
                             }
-                            result = PasValue.FromInt(count);
+                            finally
+                            {
+                                ReturnActorScanList(monsterList);
+                            }
                         }
                     }
                     return true;
@@ -7253,9 +7438,16 @@ namespace GameSvr.PasEngine
                 case "checkcurrmapmon":
                     if (CurrentNpc.m_PEnvir != null)
                     {
-                        var monsterList = new List<TBaseObject>();
-                        M2Share.UserEngine.GetMapMonster(CurrentNpc.m_PEnvir, monsterList);
-                        result = PasValue.FromInt(monsterList.Count);
+                        var monsterList = RentActorScanList();
+                        try
+                        {
+                            M2Share.UserEngine.GetMapMonster(CurrentNpc.m_PEnvir, monsterList);
+                            result = PasValue.FromInt(monsterList.Count);
+                        }
+                        finally
+                        {
+                            ReturnActorScanList(monsterList);
+                        }
                     }
                     return true;
 
@@ -7688,12 +7880,19 @@ namespace GameSvr.PasEngine
                             var kickMap = args[1].AsString();
                             var kickX = (short)args[2].AsInt();
                             var kickY = (short)args[3].AsInt();
-                            var kickList = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapRageHuman(kickSrcMap, 0, 0, 1000, kickList);
-                            foreach (var kickObj in kickList)
+                            var kickList = RentActorScanList();
+                            try
                             {
-                                if (kickObj is TPlayObject kickPlayer)
-                                    kickPlayer.SpaceMove(kickMap, kickX, kickY, 0);
+                                M2Share.UserEngine.GetMapRageHuman(kickSrcMap, 0, 0, 1000, kickList);
+                                foreach (var kickObj in kickList)
+                                {
+                                    if (kickObj is TPlayObject kickPlayer)
+                                        kickPlayer.SpaceMove(kickMap, kickX, kickY, 0);
+                                }
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(kickList);
                             }
                         }
                     }
@@ -7796,7 +7995,8 @@ namespace GameSvr.PasEngine
 
                 case "serversay":
                     if (args.Count >= 1)
-                        M2Share.UserEngine.SendBroadCastMsg(args[0].AsString(), MsgType.Notice);
+                        ServerSay(args[0].AsString(),
+                            args.Count >= 2 ? args[1].AsInt() : 0);
                     return true;
 
                 case "debugout":
@@ -8036,9 +8236,16 @@ namespace GameSvr.PasEngine
                         var map = M2Share.MapManager.FindMap(args[0].AsString());
                         if (map != null)
                         {
-                            var monsterList = new List<TBaseObject>();
-                            M2Share.UserEngine.GetMapMonster(map, monsterList);
-                            result = PasValue.FromInt(monsterList.Count);
+                            var monsterList = RentActorScanList();
+                            try
+                            {
+                                M2Share.UserEngine.GetMapMonster(map, monsterList);
+                                result = PasValue.FromInt(monsterList.Count);
+                            }
+                            finally
+                            {
+                                ReturnActorScanList(monsterList);
+                            }
                         }
                         else
                         {

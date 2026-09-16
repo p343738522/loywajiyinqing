@@ -7,6 +7,10 @@ namespace GameSvr.PasEngine
     /// <summary>
     /// Global validScriptFunc.txt registry used by the native script-interaction
     /// gate. sub_7900FC reloads it; sub_6B8CC4 queries it through TStringList.Find.
+    /// Production Find is the client-invoked function-name branch in
+    /// <c>TPlayObject.TryNativeScriptInteractionFunction</c> (CM_MERCHANTDLGSELECT
+    /// non-@ text). Not a global PAS filter: CallPlayerFunc / Envir This_Npc /
+    /// This_Player RTTI / HelperQuest board labels do not consult this list.
     /// </summary>
     internal static class NativeValidScriptFunctionRegistry
     {

@@ -1,8 +1,10 @@
 using System.Buffers.Binary;
+using System.Reflection;
 using DBSvr.Core;
 using GameSvr;
 using GameSvr.CommandSystem;
 using GameSvr.Configs;
+using GameSvr.Services;
 using SystemModule;
 
 PrepareRuntimeConfig();
@@ -196,6 +198,7 @@ CheckNativeUnionDamageFormula();
 CheckNativeUnionClientPackets();
 CheckNativeUnionEffectPackets();
 CheckNativeUnionAreaTargeting();
+CheckNativeUnionTimedAbilityStayClosed();
 
 Assert(Maps.TryParseLimitSkill("LimitSkill", out var nakedLimit) &&
        nakedLimit.SequenceEqual(new[] { 0 }), "naked LimitSkill key0");
@@ -803,8 +806,41 @@ static void AssertNativeUnionEffect(TBaseObject actor, int action,
         label + " body y");
 }
 
+static void CheckNativeUnionTimedAbilityStayClosed()
+{
+    Assert(NativeTimedAbilityCombatConsumer.DormantNotWiredIntoLiveCombat,
+        "union calculator must stay dump-only");
+    var supported = typeof(TBaseObject).GetMethod(
+        "IsSupportedTimedAbilityType",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException("IsSupportedTimedAbilityType");
+    bool IsSupported(int type) =>
+        (bool)(supported.Invoke(null, new object[] { type }) ?? false);
+    Assert(IsSupported(44), "type44 stays admitted");
+    Assert(!IsSupported(46), "type46 stays CLOSED");
+    Assert(!IsSupported(74), "type74 stays CLOSED");
+}
+
 static void CheckNativeUnionAreaTargeting()
 {
+    var warriorWarrior = CreateNativeUnionAreaFixture(0, 0);
+    var warriorWarriorOnLine = AddNativeUnionProbe(warriorWarrior.Environment,
+        12, 10);
+    var warriorWarriorOffLine = AddNativeUnionProbe(warriorWarrior.Environment,
+        12, 11);
+    Assert(warriorWarrior.Hero.TryReleaseNativeUnionMagic(),
+        "warrior-warrior line release");
+    Assert(warriorWarrior.Hero.m_TargetCret.m_WAbil.HP < 100000,
+        "warrior-warrior line hits primary");
+    Assert(warriorWarriorOnLine.m_WAbil.HP < 100000,
+        "warrior-warrior line reaches on-axis cell");
+    Equal(100000, warriorWarriorOffLine.m_WAbil.HP,
+        "warrior-warrior line excludes off-axis cell");
+    Equal(HeroObject.CalculateNativeUnionCollateralDamage(
+            100000 - warriorWarrior.Hero.m_TargetCret.m_WAbil.HP, 4, 10),
+        100000 - warriorWarriorOnLine.m_WAbil.HP,
+        "warrior-warrior on-axis cell uses diagonal collateral 4/10");
+
     var warriorMage = CreateNativeUnionAreaFixture(1, 0);
     var warriorMageInside = AddNativeUnionProbe(warriorMage.Environment, 12, 11);
     Assert(warriorMage.Hero.TryReleaseNativeUnionMagic(),

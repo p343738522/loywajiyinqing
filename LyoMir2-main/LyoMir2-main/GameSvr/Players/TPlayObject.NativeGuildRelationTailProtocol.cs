@@ -287,8 +287,8 @@ namespace GameSvr
         // 4572 CM_GILD_REFUSE_REQUEST live routing. ADDITIVE + gated on SupportsGildWrites (no store ->
         // original SendUnsupportedNativeGuildDecision, Param=1000, id echoed). Reads the request id from the
         // body and runs NativeCorpsService.ApplyGildRefuseRequest (role×type cascade + subtype refuse ladder
-        // -> ledger.Remove; see its IDAT-ASSUMPTION on the sub_6A5284 lookup key/scope and the DEFERRED
-        // applicant notify). Echoes the id with the result (Recog = request nParam1), matching native
+        // -> ledger.Remove; see its IDAT-ASSUMPTION on the sub_6A5284 lookup key/scope and the
+        // SM 4612 applicant notify). Echoes the id with the result (Recog = request nParam1), matching native
         // sub_6F6340's buffered reply.
         private void HandleNativeGildRefuseRequest(TProcessMessage processMessage)
         {

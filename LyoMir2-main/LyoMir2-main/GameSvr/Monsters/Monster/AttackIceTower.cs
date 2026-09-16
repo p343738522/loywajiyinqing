@@ -30,8 +30,8 @@ namespace GameSvr
     // VMT 差分 (132 槽 + 8 个负偏移标准槽逐槽比对 parent TAnimal) 共 6 项：
     //   +0x018 Operate   -> 0x674D70   ← 本类落地
     //   +0x084 Die       -> 0x674D20   ← fail-closed，见下
-    //   +0x088 Run       -> 0x674D80   ← fail-closed，见下
-    //   +0x0C8 ?         -> 0x674D78   ← fail-closed，见下
+    //   +0x088 Run       -> 0x674D80   ← 本类落地（NativeMakePosion 消费者）
+    //   +0x0C8 NativeMakePosion -> 0x674D78   ← 本类落地（空函数）
     //   +0x1E8 CanAddNativeTimedAbility -> 0x674D74   ← 本类落地
     //   +0x208 Struck    -> 0x674E4C   ← 本类落地
     // 槽位名依据：+0x018/+0x084/+0x088/+0x208 由已移植类交叉标定
@@ -55,19 +55,19 @@ namespace GameSvr
     // ② +0x088 Run -> sub_674D80 (203 字节)：结构已完全解出——
     //      base.Run() → m_btDirection=0 → tick=GetTickCount()
     //      若 (tick - [self+0x88]) > 0x1388(5000) 且 [self+0x74]==0：
-    //          call 0x765DEC(self, tick)  ; 刷新可见对象链表
+    //          call 0x765DEC(self, tick)  ; SearchViewRange（edx=tick 为 GetTickCount 残留）
     //          [self+0x88] = tick
     //          遍历 [self+0x388]，逐个调 helper sub_674D38，任一命中则
     //          SendRefMsg(RM_HIT 0x2714, m_btDirection, m_nCurrX, m_nCurrY, 0, "")
     //      若 (tick - [self+0x4DC]) > 0x3A98(15000)：[self+0x2AC] = 0
     //    helper sub_674D38：target 非空且 IsProperTarget → 置 true 并
     //      `push 1 / mov cx,3 / mov dl,0x1D / call [target.VMT+0xC8]`。
-    //    卡点：槽 +0xC8（基类 0x76B3C8，形参 dl=状态号 / cx=秒数 / [ebp+8]=值）
-    //    以及字段 [+0x74]、[+0x2AC] 在 C# 侧都没有已确立的映射。
-    //    宁缺毋滥：不落地半个 Run。
-    // ③ +0x0C8 -> sub_674D78 = `55 8B EC 5D C2 04 00`（空函数，ret 4）：
-    //    语义明确 = 本怪【完全免疫】+0xC8 那条状态施加路径。但该槽在 C# 无入口，
-    //    与 ② 同因 fail-closed。
+    //    原卡点已闭合：VMT+0xC8 = NativeMakePosion @0x76B3C8；[+0x74]=m_boDeath
+    //    (sub_772DA8)；[+0x88]=m_dwSearchEnemyTick (ATMonster @0x666AFE)；
+    //    [+0x388]=m_VisibleActors；[+0x2AC]=m_WAbil.HP；0x765DEC=SearchViewRange。
+    //    无抗性 RNG；MagGroupAmyounsul 48 仍关。NativeParalysisResistPercent 仍 0。
+    // ③ +0x0C8 NativeMakePosion -> sub_674D78 = `55 8B EC 5D C2 04 00`（空函数，ret 4）：
+    //    本怪完全免疫 VMT+0xC8 施加。C# NativeMakePosion 现为虚方法，空覆写返回 false。
     // ─────────────────────────────────────────────────────────────────────
     //
     // 原先 race 145 落工厂 default(0x67AE5E `xor eax,eax`) → 返回 nil，攻击冰塔根本不出现。
@@ -106,6 +106,46 @@ namespace GameSvr
         internal override bool CanAddNativeTimedAbility(byte internalType)
         {
             return false;
+        }
+
+        // 战神 VMT+0xC8 = sub_674D78 `55 8B EC 5D C2 04 00`：空函数，ret 4。
+        // Native MakePosion 无返回值；C# 返回 false = 未施加。
+        internal override bool NativeMakePosion(byte stateId, ushort seconds,
+            ushort point)
+        {
+            return false;
+        }
+
+        // 战神 VMT+0x088 = sub_674D80。helper sub_674D38 是 NativeMakePosion 消费者：
+        //   push 1 / mov cx,3 / mov dl,0x1D / call [target.VMT+0xC8]
+        public override void Run()
+        {
+            base.Run();
+            m_btDirection = 0;
+            var dwTick = HUtil32.GetTickCount();
+            if ((dwTick - m_dwSearchEnemyTick) > 5000 && !m_boDeath)
+            {
+                SearchViewRange();
+                m_dwSearchEnemyTick = dwTick;
+                var hit = false;
+                for (var i = 0; i < m_VisibleActors.Count; i++)
+                {
+                    var target = m_VisibleActors[i].BaseObject;
+                    if (target != null && IsProperTarget(target))
+                    {
+                        target.NativeMakePosion(0x1D, 3, 1);
+                        hit = true;
+                    }
+                }
+                if (hit)
+                {
+                    SendRefMsg(Grobal2.RM_HIT, m_btDirection, m_nCurrX, m_nCurrY, 0, "");
+                }
+            }
+            if ((dwTick - n4DC) > 15000)
+            {
+                m_WAbil.HP = 0;
+            }
         }
 
         // 战神 VMT+0x208 = sub_674E4C (69 字节) 全文：

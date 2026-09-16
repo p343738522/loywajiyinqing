@@ -8,8 +8,8 @@ namespace GameSvr
 {
     public partial class TPlayObject
     {
-        private const int WhitePigMallRecordSize = 180;
-        private const int WhitePigMallHotRecordCount = 5;
+        private const int WhitePigMallRecordSize = NativeShopQueryCodec.RecordSize;
+        private const int WhitePigMallHotRecordCount = NativeShopQueryCodec.HotRecordCount;
         private int _whitePigMallSentMask;
         private int _lastWhitePigMallBuyTick;
 
@@ -20,50 +20,66 @@ namespace GameSvr
 
         public void ClientQueryWhitePigMall(int requestedType)
         {
-            if (requestedType < 0 || requestedType >= 8)
-            {
-                return;
-            }
+            var sentBit = requestedType >= 0 && requestedType < NativeShopQuery.MaxShopType
+                ? NativeShopQuery.SentMaskBit(requestedType)
+                : 0;
+            var maskSet = sentBit != 0 && (_whitePigMallSentMask & sentBit) != 0;
 
-            var sentBit = 2 << requestedType;
-            if ((_whitePigMallSentMask & sentBit) != 0)
+            // sub_63A254 type>=8 / sent-mask gates do not consult shopMgr [[0x7D5D98]].
+            if (NativeShopQuery.EvaluateReqSeeShop(requestedType, maskSet, true, true).IsNoOp)
             {
                 return;
             }
 
             var items = MallManager.Instance.GetItemsForClientType(requestedType);
-            var body = BuildWhitePigMallBody(items, requestedType, 0, out var recordCount);
-            if (recordCount > 0)
+            var hotItems = MallManager.Instance.GetHotItems(WhitePigMallHotRecordCount);
+            var result = NativeShopQuery.EvaluateReqSeeShop(
+                requestedType, maskSet, items.Count > 0, hotItems.Count > 0);
+
+            if (result.SentShopItems)
             {
+                var body = BuildWhitePigMallBody(items, requestedType, 0, out _);
                 var response = Grobal2.MakeDefaultMsg(Grobal2.SM_SHOPITEMS, ObjectId, requestedType, 0, 0);
                 SendSocket(response, body);
                 SendNativeGpForbidItems();
             }
 
-            var hotItems = MallManager.Instance.GetHotItems(WhitePigMallHotRecordCount);
-            var hotBody = BuildWhitePigMallBody(hotItems, 10, WhitePigMallHotRecordCount, out var hotRecordCount);
-            if (hotRecordCount > 0)
+            if (result.SentFirstShop)
             {
+                var hotBody = BuildWhitePigMallBody(hotItems, 10, WhitePigMallHotRecordCount, out _);
                 var response = Grobal2.MakeDefaultMsg(Grobal2.SM_FIRSTSHOP, ObjectId, 0, 0, 0);
                 SendSocket(response, hotBody);
             }
 
-            _whitePigMallSentMask |= sentBit;
+            if (result.SentMaskSet)
+            {
+                _whitePigMallSentMask |= sentBit;
+            }
         }
 
         public void ClientRefreshWhitePigMall(int requestedType)
         {
-            if (requestedType < 0 || requestedType >= 8)
+            // sub_63A32C type>=8 gate does not consult shopMgr [[0x7D5D98]].
+            if (NativeShopQuery.EvaluateRenewSeeShop(requestedType, true) == NativeShopEmit.None)
             {
                 return;
             }
 
             var items = MallManager.Instance.GetItemsForClientType(requestedType);
-            var body = BuildWhitePigMallBody(items, requestedType, 0, out var recordCount);
-            var ident = recordCount > 0 ? Grobal2.SM_RESHOPITEMS_OK : Grobal2.SM_RESHOPITEMS_FAIL;
+            var emit = NativeShopQuery.EvaluateRenewSeeShop(requestedType, items.Count > 0);
+            if (emit == NativeShopEmit.None)
+            {
+                return;
+            }
+
+            var ok = emit == NativeShopEmit.ReShopItemsOk;
+            var body = ok
+                ? BuildWhitePigMallBody(items, requestedType, 0, out _)
+                : Array.Empty<byte>();
+            var ident = ok ? Grobal2.SM_RESHOPITEMS_OK : Grobal2.SM_RESHOPITEMS_FAIL;
             var response = Grobal2.MakeDefaultMsg(ident, ObjectId, requestedType, 0, 0);
-            SendSocket(response, recordCount > 0 ? body : Array.Empty<byte>());
-            if (recordCount > 0)
+            SendSocket(response, body);
+            if (ok)
             {
                 SendNativeGpForbidItems();
             }

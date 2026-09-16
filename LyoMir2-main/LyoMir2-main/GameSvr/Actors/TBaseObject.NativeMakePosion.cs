@@ -210,16 +210,23 @@ namespace GameSvr
         /// <summary>
         /// Native <c>word [self+0x180]</c> — the paralysis-resistance percentage.
         /// <para>
-        /// BLOCKED: no producer exists in this port, so it fail-closes to 0 and both
-        /// rolls above are no-ops until the feed lands. Native rebuilds the field in
-        /// the ability recompute — zeroed at 0x73D57F
-        /// (<c>66 C7 86 80 01 00 00 00 00  mov word [esi+0x180],0</c>), accumulated
-        /// per equipped source at 0x73DA5A/0x73DA61
-        /// (<c>66 8B 87 AC 00 00 00  mov ax,word [edi+0xAC]</c> then
-        /// <c>66 01 86 80 01 00 00  add word [esi+0x180],ax</c>), and snapshotted
-        /// into the client ability record at 0x743E4E/0x743E55 (<c>-&gt; word
-        /// [esi+0x9C]</c>). The source attribute (item +0xAC, listed as 麻痹抗性 in
-        /// the type-2 StdItem attribute table) is not modelled.
+        /// CLOSED: no proven producer. Fail-closes to 0 so both rolls above are
+        /// no-ops. Native rebuilds the field in RecalcAbilitys (sub_73D500) —
+        /// zeroed at 0x73D57F
+        /// (<c>66 C7 86 80 01 00 00 00 00  mov word [esi+0x180],0</c>), then
+        /// 0x73DA5A/0x73DA61
+        /// (<c>66 8B 87 AC 00 00 00  mov ax,word [edi+0xAC]</c> /
+        /// <c>66 01 86 80 01 00 00  add word [esi+0x180],ax</c>). Nearby
+        /// 0x73DAB8 uses the same edi as the 0x1B0 agg1 stack copy
+        /// (<c>lea edi,[ebp-0x1B8]</c>). Do not alias <c>wAntiPoison</c> /
+        /// <c>m_wEffectResistance</c>: those are native +0x26C (IceDoor
+        /// 0x674C12 / AttackIceTower 0x674C71), fed by property 30 麻痹抗性
+        /// through sub_78E830 AddUInt16 at agg1+0x3C. agg1+0xAC is property 66
+        /// 冰冻抗性 as INT32 (sub_78E830); reading that dword's low word as this
+        /// paralysis percent is unproven (name and width disagree), and
+        /// NativeRawAbilityPropertyCore is not wired into RecalcAbilitys.
+        /// Snapshot 0x743E4E/0x743E55 (<c>-&gt; word [esi+0x9C]</c>) stays
+        /// unmodelled with the producer.
         /// </para>
         /// </summary>
         protected virtual int NativeParalysisResistPercent => 0;

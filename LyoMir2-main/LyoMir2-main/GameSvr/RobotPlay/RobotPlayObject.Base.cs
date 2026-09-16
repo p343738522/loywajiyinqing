@@ -605,7 +605,7 @@ namespace GameSvr
                                 m_VisibleActors.RemoveAt(n18);
                                 if (VisibleBaseObject != null)
                                 {
-                                    Dispose(VisibleBaseObject);
+                                    ReturnVisibleBaseObject(VisibleBaseObject);
                                 }
                                 continue;
                             case 2:
@@ -684,6 +684,7 @@ namespace GameSvr
                         if (VisibleMapItem.nVisibleFlag == 0)
                         {
                             m_VisibleItems.RemoveAt(position);
+                            ReturnVisibleMapItem(VisibleMapItem);
                             VisibleMapItem = null;
                             if (m_VisibleItems.Count > 0)
                             {

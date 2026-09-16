@@ -5,6 +5,28 @@ namespace GameSvr
 {
     public class MagicManager
     {
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _spellScanPool;
+
+        private static List<TBaseObject> RentSpellScanList()
+        {
+            var pool = _spellScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(32);
+        }
+
+        private static void ReturnSpellScanList(IList<TBaseObject> list)
+        {
+            if (list is not List<TBaseObject> concrete) return;
+            concrete.Clear();
+            (_spellScanPool ??= new Stack<List<TBaseObject>>()).Push(concrete);
+        }
+
         internal static void SendNativeSpell(TBaseObject source,
             TUserMagic userMagic, short targetX, short targetY)
         {
@@ -67,7 +89,9 @@ namespace GameSvr
         private bool MagBigHealing(TBaseObject PlayObject, int nPower, int nX, int nY)
         {
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             PlayObject.GetMapBaseObjects(PlayObject.m_PEnvir, nX, nY, 1, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -84,6 +108,11 @@ namespace GameSvr
                         PlayObject.SendMsg(BaseObject, Grobal2.RM_10414, 0, 0, 0, 0, "");
                     }
                 }
+            }
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
             }
             return result;
         }
@@ -1261,7 +1290,9 @@ namespace GameSvr
             {
                 return false;
             }
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             BaseObject.GetMapBaseObjects(BaseObject.m_PEnvir, BaseObject.m_nCurrX, BaseObject.m_nCurrY, 9, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1274,8 +1305,11 @@ namespace GameSvr
                     }
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             BaseObject.m_wStatusTimeArr[Grobal2.STATE_TRANSPARENT] = (ushort)nHTime;
             BaseObject.m_nCharStatus = BaseObject.GetCharStatus();
             BaseObject.StatusChanged();
@@ -1485,7 +1519,9 @@ namespace GameSvr
         {
             short nAmuletIdx = 0;
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             PlayObject.GetMapBaseObjects(PlayObject.m_PEnvir, nTargetX, nTargetY, HUtil32._MAX(1, UserMagic.btLevel), BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1529,8 +1565,11 @@ namespace GameSvr
                     }
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 
@@ -1538,7 +1577,9 @@ namespace GameSvr
         {
             TBaseObject BaseObject;
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             PlayObject.GetMapBaseObjects(PlayObject.m_PEnvir, nTargetX, nTargetY, HUtil32._MAX(1, UserMagic.btLevel), BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1571,8 +1612,11 @@ namespace GameSvr
                 }
                 PlayObject.SendRefMsg(Grobal2.RM_10205, 0, BaseObject.m_nCurrX, BaseObject.m_nCurrY, 1, "");
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 
@@ -1580,7 +1624,9 @@ namespace GameSvr
         {
             var result = false;
             boSpellFire = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             PlayObject.GetMapBaseObjects(PlayObject.m_PEnvir, nTargetX, nTargetY, HUtil32._MAX(1, UserMagic.btLevel), BaseObjectList);
             SendNativeMagicFire(PlayObject, UserMagic, (short)nTargetX,
                 (short)nTargetY, TargeTBaseObject);
@@ -1612,8 +1658,11 @@ namespace GameSvr
                     }
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 
@@ -1820,7 +1869,9 @@ namespace GameSvr
         private bool MagBigExplosion(TBaseObject BaseObject, int nPower, int nX, int nY, int nRage)
         {
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             BaseObject.GetMapBaseObjects(BaseObject.m_PEnvir, nX, nY, nRage, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1832,8 +1883,11 @@ namespace GameSvr
                     result = true;
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 
@@ -1841,7 +1895,9 @@ namespace GameSvr
             int range, int divisor)
         {
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             BaseObject.GetMapBaseObjects(BaseObject.m_PEnvir, BaseObject.m_nCurrX, BaseObject.m_nCurrY, range, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1861,8 +1917,11 @@ namespace GameSvr
                     result = true;
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 
@@ -1871,8 +1930,10 @@ namespace GameSvr
             var result = 0;
             if (BaseObject.m_PEnvir.CanWalk(nX, nY, true))
             {
-                IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+                IList<TBaseObject> BaseObjectList = RentSpellScanList();
                 MagicEvent MagicEvent = null;
+                try
+                {
                 BaseObject.GetMapBaseObjects(BaseObject.m_PEnvir, nX, nY, 1, BaseObjectList);
                 for (var i = 0; i < BaseObjectList.Count; i++)
                 {
@@ -1897,7 +1958,11 @@ namespace GameSvr
                         result = 0;
                     }
                 }
-                BaseObjectList = null;
+                }
+                finally
+                {
+                    ReturnSpellScanList(BaseObjectList);
+                }
                 if (result > 0 && MagicEvent != null && MagicEvent.Events != null && MagicEvent.Events.Length >= 8)
                 {
                     var HolyCurtainEvent = new HolyCurtainEvent(BaseObject.m_PEnvir, nX - 1, nY - 2, Grobal2.ET_HOLYCURTAIN, nPower * 1000);
@@ -1939,7 +2004,9 @@ namespace GameSvr
         private bool MagMakeGroupTransparent(TBaseObject BaseObject, int nX, int nY, int nHTime)
         {
             var result = false;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            IList<TBaseObject> BaseObjectList = RentSpellScanList();
+            try
+            {
             BaseObject.GetMapBaseObjects(BaseObject.m_PEnvir, nX, nY, 1, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
             {
@@ -1953,8 +2020,11 @@ namespace GameSvr
                     }
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnSpellScanList(BaseObjectList);
+            }
             return result;
         }
 

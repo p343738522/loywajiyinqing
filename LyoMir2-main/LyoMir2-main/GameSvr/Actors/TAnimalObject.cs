@@ -248,11 +248,37 @@ namespace GameSvr
             }
         }
 
+        // Attack/Around/Run can nest on one tick (AoE _Attack -> HitMagAttackTarget);
+        // keep a per-thread stack rather than a single shared list.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _monsterScanPool;
+
+        protected static List<TBaseObject> RentMonsterScanList()
+        {
+            var pool = _monsterScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(32);
+        }
+
+        protected static void ReturnMonsterScanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_monsterScanPool ??= new Stack<List<TBaseObject>>()).Push(list);
+        }
+
         protected void HitMagAttackTarget(TBaseObject TargeTBaseObject, int nHitPower, int nMagPower, bool boFlag)
         {
             int nDamage;
             TBaseObject BaseObject;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            List<TBaseObject> BaseObjectList = RentMonsterScanList();
+            try
+            {
             this.m_btDirection = M2Share.GetNextDirection(this.m_nCurrX, this.m_nCurrY, TargeTBaseObject.m_nCurrX, TargeTBaseObject.m_nCurrY);
             this.m_PEnvir.GetBaseObjects(TargeTBaseObject.m_nCurrX, TargeTBaseObject.m_nCurrY, false, BaseObjectList);
             for (var i = 0; i < BaseObjectList.Count; i++)
@@ -272,8 +298,11 @@ namespace GameSvr
                     }
                 }
             }
-            BaseObjectList.Clear();
-            BaseObjectList = null;
+            }
+            finally
+            {
+                ReturnMonsterScanList(BaseObjectList);
+            }
             this.SendRefMsg(Grobal2.RM_HIT, this.m_btDirection, this.m_nCurrX, this.m_nCurrY, 0, "");
         }
 

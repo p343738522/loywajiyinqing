@@ -4,7 +4,9 @@
 // 完整逐字节证据: staging/herojobs_fix_20260804.md
 // 被测代码: GameSvr/Services/NativeHeroJobAbilityCurve.cs
 //
-// 所有断言都是对真实静态方法的【运行时】调用(不是源码 grep),咬的是数值行为。
+// 数值断言都是对真实静态方法的【运行时】调用。RecalcAbilitys 站点锁是源码闸:
+// 原生 VMT+0x8C/sub_73D500 不调 VMT+0x2B8。曲线由 VMT+0x2C 驱动,
+// 接到 0x687218 / 0x687E61 / 0x687F47,不进 RecalcAbilitys。
 //
 // ===========================================================================
 // 锁住的原版契约
@@ -71,6 +73,9 @@ try
     VerifyWeightCapClamp();
     VerifyBankersRounding();
     VerifyPerJobStatShape();
+    VerifyApplyWritesAbilityBlock();
+    VerifyRecalcAbilitysDoesNotCallCurve();
+    VerifyDriverWiredAtNativeSites();
 
     Console.WriteLine(
         "PASS NativeHeroJobAbilityCurveCheck checks=" + checks +
@@ -80,7 +85,9 @@ try
         " above60=war-3*@0x6926CA/mag+30*@0x694C77/taos+33*@0x693703" +
         " gt200=war226+23630/mag62+7917/taos110-shared" +
         " pair=sub_690300(map-LIMITHEROLEVEL-cap,not-weapon)" +
-        " weightcap=0xFFDC round=half-to-even@0x403574");
+        " weightcap=0xFFDC round=half-to-even@0x403574" +
+        " recalc=VMT+0x8C-sub_73D500-no-curve" +
+        " driver=VMT+0x2C@0x687218/0x687E61/0x687F47");
     return 0;
 }
 catch (Exception ex)
@@ -404,6 +411,222 @@ void VerifyPerJobStatShape()
         "only the warrior writes AcHigh — this asymmetry is the shape fingerprint");
     Assert(t.MacHigh > 0 && w.MacHigh == 0 && m.MacHigh == 0,
         "only the taoist writes MAC");
+}
+
+// ===========================================================================
+// Apply 写出面: sub_690300 把 (hi,lo) 曲线写进能力块,不碰当前 HP/MP。
+// ===========================================================================
+void VerifyApplyWritesAbilityBlock()
+{
+    var abil = new TAbility { HP = 77, MP = 88, Level = 50 };
+    NativeHeroJobAbilityCurve.Apply(abil, 0, 50, 90);
+    var war = NativeHeroJobAbilityCurve.CalculateWarrior(50, 50);
+    Equal(war.MaxHp, abil.MaxHP, "Apply writes warrior MaxHP from the uncapped pair");
+    Equal(war.MaxMp, abil.MaxMP, "Apply writes warrior MaxMP");
+    Equal(war.MaxWeight, abil.MaxWeight, "Apply writes MaxWeight");
+    Equal(war.DcLow, HUtil32.LoWord(abil.DC), "Apply packs DcLow into LoWord");
+    Equal(war.DcHigh, HUtil32.HiWord(abil.DC), "Apply packs DcHigh into HiWord");
+    Equal(77, abil.HP, "sub_690300 does not rewrite current HP");
+    Equal(88, abil.MP, "sub_690300 does not rewrite current MP");
+
+    NativeHeroJobAbilityCurve.Apply(abil, 0, 80, 90, 50, 40);
+    var capped = NativeHeroJobAbilityCurve.CalculateWarrior(80, 50);
+    Equal(capped.MaxHp, abil.MaxHP,
+        "Apply with LIMITHEROLEVEL uses lo=map cap for HP");
+    Equal(capped.MaxWeight, abil.MaxWeight,
+        "Apply with LIMITHEROLEVEL keeps hi=real level for weight");
+}
+
+// ===========================================================================
+// RecalcAbilitys 站点锁。原生 VMT+0x8C = sub_73D500 是装备聚合,不调 VMT+0x2B8。
+// 活站点是 THeroAct VMT+0x240/@0x687218 与 VMT+0x078/@0x687E61/@0x687F47:
+// `call [edx+0x2C]` (sub_690300 -> 曲线) 紧跟 `call [edx+0x8C]` (RecalcAbilitys)。
+// C# RecalcAbilitys 已走 m_WAbil.CopyFrom(m_Abil) 的既证路径。把曲线接进去会
+// 与 RecalcLevelAbilitys 双加,并在每次换装上重写 m_Abil。
+// ===========================================================================
+void VerifyRecalcAbilitysDoesNotCallCurve()
+{
+    var root = AuditRepoRoot.Resolve();
+    var recalcPath = Path.Combine(root, "GameSvr", "Actors", "TBaseObject.Base.cs");
+    var playPath = Path.Combine(root, "GameSvr", "Players", "TPlayObject.Base.cs");
+    var heroPath = Path.Combine(root, "GameSvr", "Actors", "HeroObject.cs");
+    var gameSvr = Path.Combine(root, "GameSvr");
+
+    var recalc = File.ReadAllText(recalcPath);
+    var play = File.ReadAllText(playPath);
+    var hero = File.ReadAllText(heroPath);
+
+    var recalcBody = ExtractMethod(recalc, "public virtual void RecalcAbilitys()");
+    Assert(recalcBody.Length > 0, "TBaseObject.RecalcAbilitys body must be found");
+    Assert(LiveContains(recalcBody, "m_WAbil.CopyFrom(m_Abil)"),
+        "RecalcAbilitys proven path is CopyFrom(m_Abil) (sub_73D500 working-block seed)");
+    Assert(!LiveContains(recalcBody, "NativeHeroJobAbilityCurve"),
+        "RecalcAbilitys must not call NativeHeroJobAbilityCurve (VMT+0x2B8 is VMT+0x2C, before +0x8C)");
+    Assert(!LiveContains(recalcBody, "ApplyNativeHeroAbilityInit"),
+        "RecalcAbilitys must not call ApplyNativeHeroAbilityInit (that is VMT+0x2C, before +0x8C)");
+    Assert(!LiveContains(recalcBody, "RecalcLevelAbilitys"),
+        "RecalcAbilitys must not call RecalcLevelAbilitys (native +0x8C does not rewrite the base curve)");
+
+    var playBody = ExtractMethod(play, "public override void RecalcAbilitys()");
+    Assert(playBody.Length > 0, "TPlayObject.RecalcAbilitys override must be found");
+    Assert(!LiveContains(playBody, "NativeHeroJobAbilityCurve"),
+        "TPlayObject.RecalcAbilitys must not call NativeHeroJobAbilityCurve");
+    Assert(!LiveContains(playBody, "ApplyNativeHeroAbilityInit"),
+        "TPlayObject.RecalcAbilitys must not call ApplyNativeHeroAbilityInit");
+    Assert(LiveContains(playBody, "base.RecalcAbilitys()"),
+        "TPlayObject.RecalcAbilitys must keep the inherited sub_73D500 path");
+
+    Assert(!LiveContains(hero, "override void RecalcAbilitys"),
+        "HeroObject must not override RecalcAbilitys (THeroAct inherits sub_73D500)");
+
+    foreach (var file in Directory.EnumerateFiles(gameSvr, "*.cs", SearchOption.AllDirectories))
+    {
+        var rel = file.Replace('\\', '/');
+        if (rel.EndsWith("/NativeHeroJobAbilityCurve.cs", StringComparison.OrdinalIgnoreCase)
+            || rel.EndsWith("/HeroObject.cs", StringComparison.OrdinalIgnoreCase))
+            continue;
+        var text = File.ReadAllText(file);
+        Assert(!LiveContains(text, "NativeHeroJobAbilityCurve"),
+            "GameSvr/" + Path.GetRelativePath(gameSvr, file)
+            + " must not call NativeHeroJobAbilityCurve (only VMT+0x2C driver may)");
+    }
+}
+
+// ===========================================================================
+// VMT+0x2C 驱动接到三个原生站点,每处一次,且在 RecalcAbilitys 之前。
+// ===========================================================================
+void VerifyDriverWiredAtNativeSites()
+{
+    var root = AuditRepoRoot.Resolve();
+    var hero = File.ReadAllText(Path.Combine(root, "GameSvr", "Actors", "HeroObject.cs"));
+    var give = File.ReadAllText(Path.Combine(root, "GameSvr", "Players",
+        "TPlayObject.NativeGive.cs"));
+
+    var init = ExtractMethod(hero, "internal void ApplyNativeHeroAbilityInit()");
+    Assert(init.Length > 0, "HeroObject.ApplyNativeHeroAbilityInit must exist (sub_690300)");
+    Assert(LiveContains(init, "NativeHeroJobAbilityCurve.Apply"),
+        "ApplyNativeHeroAbilityInit must call NativeHeroJobAbilityCurve.Apply");
+    Assert(LiveContains(init, "LimitHeroLevel"),
+        "ApplyNativeHeroAbilityInit must read map+0xC0 LIMITHEROLEVEL");
+    Assert(LiveContains(init, "LimitPlayerLevel"),
+        "ApplyNativeHeroAbilityInit must read map+0xBE LIMITPLAYERLEVEL");
+    Assert(!LiveContains(init, "RecalcAbilitys"),
+        "ApplyNativeHeroAbilityInit must not call RecalcAbilitys (native +0x2C then +0x8C)");
+    Assert(!LiveContains(init, "RecalcLevelAbilitys"),
+        "ApplyNativeHeroAbilityInit must not call RecalcLevelAbilitys");
+
+    var logonHelper = ExtractMethod(hero, "private void RecalcAndSendNativeLogonAbility(bool queued)");
+    Assert(logonHelper.Length > 0, "RecalcAndSendNativeLogonAbility must be found");
+    Assert(LiveContains(logonHelper, "ApplyNativeHeroAbilityInit()"),
+        "0x687E61/0x687F47: RecalcAndSendNativeLogonAbility must run VMT+0x2C");
+    Assert(LiveContains(logonHelper, "RecalcAbilitys()"),
+        "0x687E61/0x687F47: RecalcAndSendNativeLogonAbility must still run VMT+0x8C");
+    Assert(LiveIndex(logonHelper, "ApplyNativeHeroAbilityInit()")
+           < LiveIndex(logonHelper, "RecalcAbilitys()"),
+        "0x687E61/0x687F47: VMT+0x2C must precede VMT+0x8C");
+    Assert(!LiveContains(logonHelper, "RecalcLevelAbilitys"),
+        "logon helper must not also run RecalcLevelAbilitys (that would double-apply)");
+
+    var logon = ExtractMethod(hero, "public void SendHeroLogon()");
+    Assert(logon.Length > 0, "SendHeroLogon must be found");
+    Equal(2, LiveCount(logon, "RecalcAndSendNativeLogonAbility("),
+        "SendHeroLogon must invoke RecalcAndSendNativeLogonAbility twice (0x687E61 and 0x687F47)");
+    Assert(LiveContains(logon, "RecalcAndSendNativeLogonAbility(false)"),
+        "first logon site 0x687E61 is RecalcAndSendNativeLogonAbility(false)");
+    Assert(LiveContains(logon, "RecalcAndSendNativeLogonAbility(true)"),
+        "second logon site 0x687F47 is RecalcAndSendNativeLogonAbility(true)");
+
+    var grant = ExtractMethod(give, "internal void GrantNativeHeroExperience(HeroObject hero, int amount,");
+    Assert(grant.Length > 0, "GrantNativeHeroExperience must be found");
+    Assert(LiveContains(grant, "ApplyNativeHeroAbilityInit()"),
+        "0x687218: GrantNativeHeroExperience must run VMT+0x2C");
+    Assert(LiveContains(grant, "RecalcAbilitys()"),
+        "0x687218: GrantNativeHeroExperience must still run VMT+0x8C");
+    Assert(LiveIndex(grant, "ApplyNativeHeroAbilityInit()")
+           < LiveIndex(grant, "RecalcAbilitys()"),
+        "0x687218: VMT+0x2C must precede VMT+0x8C");
+    Assert(!LiveContains(grant, "RecalcLevelAbilitys"),
+        "0x687218 must not also run RecalcLevelAbilitys (player curve, would overwrite or double-apply)");
+}
+
+static string ExtractMethod(string source, string signature)
+{
+    var start = source.IndexOf(signature, StringComparison.Ordinal);
+    if (start < 0)
+        return string.Empty;
+    var brace = source.IndexOf('{', start);
+    if (brace < 0)
+        return string.Empty;
+    var depth = 0;
+    for (var i = brace; i < source.Length; i++)
+    {
+        var c = source[i];
+        if (c == '{') depth++;
+        else if (c == '}')
+        {
+            depth--;
+            if (depth == 0)
+                return source.Substring(brace, i - brace + 1);
+        }
+    }
+    return string.Empty;
+}
+
+static bool LiveContains(string source, string needle)
+{
+    foreach (var raw in source.Split('\n'))
+    {
+        var line = raw.TrimStart();
+        if (line.StartsWith("//", StringComparison.Ordinal)
+            || line.StartsWith("*", StringComparison.Ordinal)
+            || line.StartsWith("///", StringComparison.Ordinal))
+            continue;
+        if (line.Contains(needle, StringComparison.Ordinal))
+            return true;
+    }
+    return false;
+}
+
+static int LiveIndex(string source, string needle)
+{
+    var pos = 0;
+    foreach (var raw in source.Split('\n'))
+    {
+        var line = raw.TrimStart();
+        if (!(line.StartsWith("//", StringComparison.Ordinal)
+              || line.StartsWith("*", StringComparison.Ordinal)
+              || line.StartsWith("///", StringComparison.Ordinal)))
+        {
+            var at = raw.IndexOf(needle, StringComparison.Ordinal);
+            if (at >= 0)
+                return pos + at;
+        }
+        pos += raw.Length + 1;
+    }
+    return -1;
+}
+
+static int LiveCount(string source, string needle)
+{
+    var count = 0;
+    foreach (var raw in source.Split('\n'))
+    {
+        var line = raw.TrimStart();
+        if (line.StartsWith("//", StringComparison.Ordinal)
+            || line.StartsWith("*", StringComparison.Ordinal)
+            || line.StartsWith("///", StringComparison.Ordinal))
+            continue;
+        var start = 0;
+        while (true)
+        {
+            var at = line.IndexOf(needle, start, StringComparison.Ordinal);
+            if (at < 0)
+                break;
+            count++;
+            start = at + needle.Length;
+        }
+    }
+    return count;
 }
 
 // ===========================================================================

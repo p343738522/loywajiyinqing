@@ -55,6 +55,43 @@ namespace SystemModule.Packet
             out byte[] data, out string error)
         {
             data = null;
+            if (!TryGetEncodeLength(frame, out var payloadLength, out error))
+                return false;
+            data = new byte[HeaderSize + payloadLength];
+            return TryEncode(frame, data, out _, out error);
+        }
+
+        public static bool TryEncode(YbDbLegacy77Frame frame, Span<byte> destination,
+            out int written, out string error)
+        {
+            written = 0;
+            if (!TryGetEncodeLength(frame, out var payloadLength, out error))
+                return false;
+
+            var payload = frame.Payload ?? Array.Empty<byte>();
+            written = HeaderSize + payloadLength;
+            if (destination.Length < written)
+            {
+                error = "legacy YBDB encode buffer is too small";
+                written = 0;
+                return false;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(0, 4), FrameMagic);
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(4, 4), frame.QueryId);
+            BinaryPrimitives.WriteInt32LittleEndian(destination.Slice(8, 4), frame.Param);
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(12, 2), frame.Ident);
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(14, 2),
+                (ushort)payloadLength);
+            if (payloadLength > 0)
+                payload.AsSpan(0, payloadLength).CopyTo(destination.Slice(HeaderSize));
+            return true;
+        }
+
+        private static bool TryGetEncodeLength(YbDbLegacy77Frame frame, out int payloadLength,
+            out string error)
+        {
+            payloadLength = 0;
             error = string.Empty;
             if (frame == null)
             {
@@ -63,20 +100,13 @@ namespace SystemModule.Packet
             }
 
             var payload = frame.Payload ?? Array.Empty<byte>();
-            if (payload.Length > MaximumPayloadLength)
+            payloadLength = payload.Length;
+            if (payloadLength > MaximumPayloadLength)
             {
                 error = $"legacy YBDB payload exceeds {MaximumPayloadLength} bytes";
+                payloadLength = 0;
                 return false;
             }
-
-            data = new byte[HeaderSize + payload.Length];
-            BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0, 4), FrameMagic);
-            BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(4, 4), frame.QueryId);
-            BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(8, 4), frame.Param);
-            BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(12, 2), frame.Ident);
-            BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(14, 2),
-                (ushort)payload.Length);
-            payload.CopyTo(data, HeaderSize);
             return true;
         }
 

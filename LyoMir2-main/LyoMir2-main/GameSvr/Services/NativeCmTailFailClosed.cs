@@ -62,8 +62,6 @@ namespace GameSvr.Services
             void Add(int ident, uint handler, uint callee, string subsystem, string blocker)
                 => map[ident] = new Entry(ident, handler, callee, subsystem, blocker);
 
-            Add(4125, 0x006DAE25, 0x00746C34, "定长记录表广播",
-                "[[0x7D6014]] 表的 0x2B 字节记录格式未定义，SM 4032 body 无法推导");
             Add(4126, 0x006DAE74, 0x006BF75C, "洗灵石",
                 "洗灵字段 [+0x59C]/[+0x5A0]/[+0x5A4]/[+0x610] 未建模");
             Add(4127, 0x006DAE8D, 0x00747CF4, "洗灵石重算",

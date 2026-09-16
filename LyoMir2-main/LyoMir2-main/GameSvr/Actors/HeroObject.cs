@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using GameSvr.Plugins;
+using GameSvr.Services;
 using SystemModule;
 
 namespace GameSvr
@@ -1288,6 +1289,29 @@ namespace GameSvr
                 target.m_nCurrY);
             SendNativeUnionAction(this, target, Grobal2.RM_WWJATTACK);
             SendNativeUnionAction(master, target, Grobal2.RM_WWJATTACK);
+
+            // Remaining DC hit site: sub_68FF2C caller 0x68EA31. MC/SC callers
+            // already feed area/diagonal DealNativeUnionMagicAreaHit; this line
+            // is the last union delivery that still sent only WWJ visuals.
+            var dx = Math.Sign(target.m_nCurrX - m_nCurrX);
+            var dy = Math.Sign(target.m_nCurrY - m_nCurrY);
+            if (dx == 0 && dy == 0)
+            {
+                dx = Math.Sign(target.m_nCurrX - master.m_nCurrX);
+                dy = Math.Sign(target.m_nCurrY - master.m_nCurrY);
+            }
+
+            var power = unchecked(
+                GetNativeUnionPhysicalDamage(this, magic) +
+                GetNativeUnionPhysicalDamage(master, magic));
+            for (var offset = -3; offset <= 3; offset++)
+            {
+                DealNativeUnionMagicAreaHit(
+                    target.m_nCurrX + offset * dx,
+                    target.m_nCurrY + offset * dy, target, magic, power,
+                    4, 10, out _, true);
+            }
+            DealNativeUnionMagicHit(target, magic, power);
             return true;
         }
 
@@ -1567,7 +1591,9 @@ namespace GameSvr
             if (m_PEnvir == null)
                 return false;
 
-            var objects = new List<TBaseObject>();
+            var objects = RentMonsterScanList();
+            try
+            {
             GetMapBaseObjects(m_PEnvir, x, y, 0, objects);
             foreach (var candidate in objects)
             {
@@ -1586,6 +1612,11 @@ namespace GameSvr
                 return true;
             }
             return false;
+            }
+            finally
+            {
+                ReturnMonsterScanList(objects);
+            }
         }
 
         internal static int CalculateNativeUnionCollateralDamage(int power,
@@ -1893,8 +1924,33 @@ namespace GameSvr
                 magic.MagicInfo.btTrainLv);
         }
 
+        /// <summary>
+        /// THeroAct VMT+0x2C = sub_690300. Native sites 0x687218 / 0x687E61 /
+        /// 0x687F47 each call this immediately before RecalcAbilitys (VMT+0x8C).
+        /// </summary>
+        internal void ApplyNativeHeroAbilityInit()
+        {
+            var mapHeroLimit = 0;
+            var mapPlayerLimit = 0;
+            if (m_PEnvir?.Flag != null)
+            {
+                mapHeroLimit = m_PEnvir.Flag.LimitHeroLevel;
+                mapPlayerLimit = m_PEnvir.Flag.LimitPlayerLevel;
+            }
+
+            var masterLevel = 0;
+            if (m_Master is TPlayObject master)
+                masterLevel = master.m_Abil.Level;
+
+            NativeHeroJobAbilityCurve.Apply(m_Abil, m_btJob, m_Abil.Level,
+                masterLevel, mapHeroLimit, mapPlayerLimit);
+        }
+
         private void RecalcAndSendNativeLogonAbility(bool queued)
         {
+            // THeroAct VMT+0x078 sub_687D70: call [vmt+0x2C] @0x687E61 / @0x687F47
+            // then call [vmt+0x8C]. Same order as VMT+0x240 @0x687218.
+            ApplyNativeHeroAbilityInit();
             RecalcAbilitys();
             var unionMagic = FindNativeUnionMagic();
             if (unionMagic != null)

@@ -1014,6 +1014,30 @@ namespace GameSvr.Plugins
         /// </summary>
         private const int NativeChainWalkCap = 30;
 
+        // Area collect nests cell walks, heal nests FindTargets; keep a
+        // per-thread stack rather than a single shared list.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _pluginScanPool;
+
+        private static List<TBaseObject> RentPluginScanList()
+        {
+            var pool = _pluginScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(64);
+        }
+
+        private static void ReturnPluginScanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_pluginScanPool ??= new Stack<List<TBaseObject>>()).Push(list);
+        }
+
         /// <summary>
         /// 走一格的对象链表并施加两个原生前置条件：
         /// `cmp [eax+0x2AC],0 / jle`（HP&gt;0，0x1006E02D / 0x1006EBFC）与
@@ -1021,22 +1045,27 @@ namespace GameSvr.Plugins
         /// 自身排除不用另写 —— 原生 `sub_767498` 的第 4 道门 0x7674B8 就是
         /// `目标 == self → false`，本仓 `NativeProperTargetPreGate` 已逐字节移植。
         /// </summary>
-        private List<TBaseObject> NativeWalkCell(int x, int y)
+        private void NativeWalkCell(int x, int y, List<TBaseObject> picked)
         {
-            var picked = new List<TBaseObject>();
             var envir = _player.m_PEnvir;
-            if (envir == null) return picked;
-            var chain = new List<TBaseObject>();
-            envir.GetBaseObjects(x, y, true, chain);
-            int budget = NativeChainWalkCap;
-            foreach (var t in chain)
+            if (envir == null) return;
+            var chain = RentPluginScanList();
+            try
             {
-                if (budget-- <= 0) break;
-                if (t == null || t.m_WAbil.HP <= 0) continue;
-                if (!_player.IsProperTarget(t)) continue;
-                picked.Add(t);
+                envir.GetBaseObjects(x, y, true, chain);
+                int budget = NativeChainWalkCap;
+                foreach (var t in chain)
+                {
+                    if (budget-- <= 0) break;
+                    if (t == null || t.m_WAbil.HP <= 0) continue;
+                    if (!_player.IsProperTarget(t)) continue;
+                    picked.Add(t);
+                }
             }
-            return picked;
+            finally
+            {
+                ReturnPluginScanList(chain);
+            }
         }
 
         /// <summary>
@@ -1046,11 +1075,19 @@ namespace GameSvr.Plugins
         /// </summary>
         private List<TBaseObject> NativeCollectAreaTargets(int cx, int cy, int round)
         {
-            var list = new List<TBaseObject>();
-            for (int x = cx - round; x <= cx + round; x++)
-                for (int y = cy - round; y <= cy + round; y++)
-                    list.AddRange(NativeWalkCell(x, y));
-            return list;
+            var list = RentPluginScanList();
+            try
+            {
+                for (int x = cx - round; x <= cx + round; x++)
+                    for (int y = cy - round; y <= cy + round; y++)
+                        NativeWalkCell(x, y, list);
+                return list;
+            }
+            catch
+            {
+                ReturnPluginScanList(list);
+                throw;
+            }
         }
 
         /// <summary>
@@ -1113,7 +1150,7 @@ namespace GameSvr.Plugins
         /// <summary>寻找范围内目标, includePlayers控制是否包含玩家</summary>
         List<TBaseObject> FindTargets(int x, int y, int range, bool players)
         {
-            var list = new List<TBaseObject>();
+            var list = RentPluginScanList();
             var envir = _player.m_PEnvir;
             if (envir == null) return list;
             envir.GetRangeBaseObject(x, y, range, players, list);
@@ -1198,14 +1235,22 @@ namespace GameSvr.Plugins
                 int cx = lei == 1 ? _player.m_nCurrX : tx;
                 int cy = lei == 1 ? _player.m_nCurrY : ty;
                 int last = 0;
-                foreach (var t in NativeCollectAreaTargets(cx, cy, range))
+                var areaTargets = NativeCollectAreaTargets(cx, cy, range);
+                try
                 {
-                    // 0x1006E5E3 / 0x1006E5ED 都是 `je/jne 下一个`，不返回错误码
-                    if (!NativeClassFilterAccepts(filter, t)) continue;
-                    last = CustomDamageOne(t, magicLv, baseHp, atkSlot, defSlot,
-                        cuttingV, mgId, undead, doubling, delay);
+                    foreach (var t in areaTargets)
+                    {
+                        // 0x1006E5E3 / 0x1006E5ED 都是 `je/jne 下一个`，不返回错误码
+                        if (!NativeClassFilterAccepts(filter, t)) continue;
+                        last = CustomDamageOne(t, magicLv, baseHp, atkSlot, defSlot,
+                            cuttingV, mgId, undead, doubling, delay);
+                    }
+                    return last;
                 }
-                return last;
+                finally
+                {
+                    ReturnPluginScanList(areaTargets);
+                }
             }
 
             if (attId != 0)
@@ -1232,30 +1277,37 @@ namespace GameSvr.Plugins
         /// </summary>
         private int NativeChainDamage(int x, int y, int filter, Func<TBaseObject, int> hit)
         {
-            var chain = new List<TBaseObject>();
-            _player.m_PEnvir?.GetBaseObjects(x, y, true, chain);
-            if (chain.Count == 0) return YsErrNoTarget;
-
-            int last = 0;
-            int budget = NativeChainWalkCap;
-            for (int i = 0; i < chain.Count; i++)
+            var chain = RentPluginScanList();
+            try
             {
-                if (budget-- <= 0) break;
-                var t = chain[i];
-                bool hasNext = i + 1 < chain.Count;
-                if (t == null || t.m_WAbil.HP <= 0 || !_player.IsProperTarget(t))
+                _player.m_PEnvir?.GetBaseObjects(x, y, true, chain);
+                if (chain.Count == 0) return YsErrNoTarget;
+
+                int last = 0;
+                int budget = NativeChainWalkCap;
+                for (int i = 0; i < chain.Count; i++)
                 {
-                    if (!hasNext) return YsErrNoTarget;
-                    continue;
+                    if (budget-- <= 0) break;
+                    var t = chain[i];
+                    bool hasNext = i + 1 < chain.Count;
+                    if (t == null || t.m_WAbil.HP <= 0 || !_player.IsProperTarget(t))
+                    {
+                        if (!hasNext) return YsErrNoTarget;
+                        continue;
+                    }
+                    // 单格路径首个类不匹配即整体返回 -777（0x1006E158 / 0x1006EC9C 之后
+                    // 直接 `mov eax,0xFFFFFCF7; ret`）
+                    if (!NativeClassFilterAccepts(filter, t)) return YsErrClass;
+                    last = hit(t);
+                    // 0x1006E36C / 0x1006ED64：链表走到头就收工
+                    if (!hasNext) break;
                 }
-                // 单格路径首个类不匹配即整体返回 -777（0x1006E158 / 0x1006EC9C 之后
-                // 直接 `mov eax,0xFFFFFCF7; ret`）
-                if (!NativeClassFilterAccepts(filter, t)) return YsErrClass;
-                last = hit(t);
-                // 0x1006E36C / 0x1006ED64：链表走到头就收工
-                if (!hasNext) break;
+                return last;
             }
-            return last;
+            finally
+            {
+                ReturnPluginScanList(chain);
+            }
         }
 
         private int CustomDamageOne(TBaseObject target, int magicLv, int baseHp,
@@ -1385,14 +1437,22 @@ namespace GameSvr.Plugins
                 int cx = lei == 1 ? _player.m_nCurrX : tx;
                 int cy = lei == 1 ? _player.m_nCurrY : ty;
                 int last = 0;
-                foreach (var t in NativeCollectAreaTargets(cx, cy, range))
+                var areaTargets = NativeCollectAreaTargets(cx, cy, range);
+                try
                 {
-                    // 0x1006EFB0 / 0x1006EFBA 是 `je/jne 下一个`，方框路径只跳过该格
-                    if (!NativeClassFilterAccepts(filter, t)) continue;
-                    NativeLandDamage(t, dmg, delayMs);
-                    last = dmg;
+                    foreach (var t in areaTargets)
+                    {
+                        // 0x1006EFB0 / 0x1006EFBA 是 `je/jne 下一个`，方框路径只跳过该格
+                        if (!NativeClassFilterAccepts(filter, t)) continue;
+                        NativeLandDamage(t, dmg, delayMs);
+                        last = dmg;
+                    }
+                    return last;
                 }
-                return last;
+                finally
+                {
+                    ReturnPluginScanList(areaTargets);
+                }
             }
 
             if (attId != 0)
@@ -1431,20 +1491,27 @@ namespace GameSvr.Plugins
         public void DirectAttack(int roleId, int hp)
         {
             if (!Enabled("自定义伤害")) return;
-            var list = new List<TBaseObject>();
-            _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
-            foreach (var t in list)
+            var list = RentPluginScanList();
+            try
             {
-                if (t.ObjectId == roleId)
+                _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
+                foreach (var t in list)
                 {
-                    if (hp > 0)
-                        t.m_WAbil.HP = TBaseObject.ClampAbility((long)t.m_WAbil.HP - hp);
-                    else
-                        t.m_WAbil.HP = (int)Math.Min(t.m_WAbil.MaxHP,
-                            (long)t.m_WAbil.HP - hp);
-                    t.SendRefMsg(Grobal2.RM_STRUCK, (short)Math.Abs(hp), t.m_WAbil.HP, t.m_WAbil.MaxHP, _player.ObjectId, "");
-                    break;
+                    if (t.ObjectId == roleId)
+                    {
+                        if (hp > 0)
+                            t.m_WAbil.HP = TBaseObject.ClampAbility((long)t.m_WAbil.HP - hp);
+                        else
+                            t.m_WAbil.HP = (int)Math.Min(t.m_WAbil.MaxHP,
+                                (long)t.m_WAbil.HP - hp);
+                        t.SendRefMsg(Grobal2.RM_STRUCK, (short)Math.Abs(hp), t.m_WAbil.HP, t.m_WAbil.MaxHP, _player.ObjectId, "");
+                        break;
+                    }
                 }
+            }
+            finally
+            {
+                ReturnPluginScanList(list);
             }
         }
 
@@ -1479,16 +1546,30 @@ namespace GameSvr.Plugins
             {
                 for (int y = cy - round; y <= cy + round; y++)
                 {
-                    var raw = new List<TBaseObject>();
-                    envir.GetBaseObjects(x, y, true, raw);
-                    var cell = new List<TBaseObject>();
-                    foreach (var t in raw)
+                    var raw = RentPluginScanList();
+                    var cell = RentPluginScanList();
+                    try
                     {
-                        if (t == null) continue;
-                        if (excludeSelf && t == _player) continue;
-                        cell.Add(t);
+                        try
+                        {
+                            envir.GetBaseObjects(x, y, true, raw);
+                            foreach (var t in raw)
+                            {
+                                if (t == null) continue;
+                                if (excludeSelf && t == _player) continue;
+                                cell.Add(t);
+                            }
+                        }
+                        finally
+                        {
+                            ReturnPluginScanList(raw);
+                        }
+                        yield return cell;
                     }
-                    yield return cell;
+                    finally
+                    {
+                        ReturnPluginScanList(cell);
+                    }
                 }
             }
         }
@@ -1687,24 +1768,31 @@ namespace GameSvr.Plugins
             var envir = caller?.m_PEnvir;
             if (envir == null || source == null || range <= 0) return recipients;
 
-            var objects = new List<TBaseObject>();
-            envir.GetMapBaseObjects(source.m_nCurrX, source.m_nCurrY, range, objects);
-            var minX = (long)source.m_nCurrX - range;
-            var maxX = (long)source.m_nCurrX + range;
-            var minY = (long)source.m_nCurrY - range;
-            var maxY = (long)source.m_nCurrY + range;
-            var seen = new HashSet<int>();
-            foreach (var actor in objects)
+            var objects = RentPluginScanList();
+            try
             {
-                if (actor?.GetType() != typeof(TPlayObject)) continue;
-                if (actor.m_nCurrX < 0 || actor.m_nCurrY < 0
-                    || actor.m_nCurrX < minX || actor.m_nCurrX >= maxX
-                    || actor.m_nCurrY < minY || actor.m_nCurrY >= maxY)
-                    continue;
-                var player = (TPlayObject)actor;
-                if (seen.Add(player.ObjectId)) recipients.Add(player);
+                envir.GetMapBaseObjects(source.m_nCurrX, source.m_nCurrY, range, objects);
+                var minX = (long)source.m_nCurrX - range;
+                var maxX = (long)source.m_nCurrX + range;
+                var minY = (long)source.m_nCurrY - range;
+                var maxY = (long)source.m_nCurrY + range;
+                var seen = new HashSet<int>();
+                foreach (var actor in objects)
+                {
+                    if (actor?.GetType() != typeof(TPlayObject)) continue;
+                    if (actor.m_nCurrX < 0 || actor.m_nCurrY < 0
+                        || actor.m_nCurrX < minX || actor.m_nCurrX >= maxX
+                        || actor.m_nCurrY < minY || actor.m_nCurrY >= maxY)
+                        continue;
+                    var player = (TPlayObject)actor;
+                    if (seen.Add(player.ObjectId)) recipients.Add(player);
+                }
+                return recipients;
             }
-            return recipients;
+            finally
+            {
+                ReturnPluginScanList(objects);
+            }
         }
 
         /// <summary>
@@ -1793,12 +1881,19 @@ namespace GameSvr.Plugins
                     if (isAoe == 1 && !NativeRollHit(probability)) continue;
                     byte dir = NativePushDirFromCell(x, y,
                         _player.m_nCurrX, _player.m_nCurrY, reverse);
-                    var raw = new List<TBaseObject>();
-                    envir.GetBaseObjects(x, y, true, raw);
-                    foreach (var t in raw)
+                    var raw = RentPluginScanList();
+                    try
                     {
-                        if (t == null) continue;
-                        result = NativeApplyPush(t, dir, distance);
+                        envir.GetBaseObjects(x, y, true, raw);
+                        foreach (var t in raw)
+                        {
+                            if (t == null) continue;
+                            result = NativeApplyPush(t, dir, distance);
+                        }
+                    }
+                    finally
+                    {
+                        ReturnPluginScanList(raw);
                     }
                 }
             }
@@ -2000,24 +2095,31 @@ namespace GameSvr.Plugins
         {
             if (!TunnelGate()) return 0;
             var envir = _player.m_PEnvir; if (envir == null) return 0;
-            var list = new List<TBaseObject>();
-            M2Share.UserEngine.GetMapMonster(envir, list);
-            int pulled = 0;
-            foreach (var m in list)
+            var list = RentPluginScanList();
+            try
             {
-                if (m == null || m.m_boDeath || m.m_btRaceServer == Grobal2.RC_PLAYOBJECT) continue;
-                if (levelLimit > 0 && m.m_Abil.Level > levelLimit) continue;
-                int dx = Math.Abs(m.m_nCurrX - _player.m_nCurrX);
-                int dy = Math.Abs(m.m_nCurrY - _player.m_nCurrY);
-                if (dx <= range && dy <= range)
+                M2Share.UserEngine.GetMapMonster(envir, list);
+                int pulled = 0;
+                foreach (var m in list)
                 {
-                    m.m_nCurrX = _player.m_nCurrX;
-                    m.m_nCurrY = _player.m_nCurrY;
-                    pulled++;
+                    if (m == null || m.m_boDeath || m.m_btRaceServer == Grobal2.RC_PLAYOBJECT) continue;
+                    if (levelLimit > 0 && m.m_Abil.Level > levelLimit) continue;
+                    int dx = Math.Abs(m.m_nCurrX - _player.m_nCurrX);
+                    int dy = Math.Abs(m.m_nCurrY - _player.m_nCurrY);
+                    if (dx <= range && dy <= range)
+                    {
+                        m.m_nCurrX = _player.m_nCurrX;
+                        m.m_nCurrY = _player.m_nCurrY;
+                        pulled++;
+                    }
+                    if (maxCount > 0 && pulled >= maxCount) break;
                 }
-                if (maxCount > 0 && pulled >= maxCount) break;
+                return pulled;
             }
-            return pulled;
+            finally
+            {
+                ReturnPluginScanList(list);
+            }
         }
 
         // ═══════════════════════════════════════════════════════════════
@@ -2033,10 +2135,18 @@ namespace GameSvr.Plugins
             if (range > 0)
             {
                 // AoE heal on targets in range
-                foreach (var t in FindTargets(tx, ty, range, true))
+                var healTargets = FindTargets(tx, ty, range, true);
+                try
                 {
-                    t.IncHealthSpell(allHp, 0);
-                    totalHeal += allHp;
+                    foreach (var t in healTargets)
+                    {
+                        t.IncHealthSpell(allHp, 0);
+                        totalHeal += allHp;
+                    }
+                }
+                finally
+                {
+                    ReturnPluginScanList(healTargets);
                 }
             }
             // Self/roleId heal
@@ -2048,11 +2158,18 @@ namespace GameSvr.Plugins
             else
             {
                 // Find creature by roleId and heal
-                var list = new List<TBaseObject>();
-                _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
-                foreach (var t in list)
+                var list = RentPluginScanList();
+                try
                 {
-                    if (t.ObjectId == roleId) { t.IncHealthSpell(oneHp, 0); totalHeal += oneHp; break; }
+                    _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
+                    foreach (var t in list)
+                    {
+                        if (t.ObjectId == roleId) { t.IncHealthSpell(oneHp, 0); totalHeal += oneHp; break; }
+                    }
+                }
+                finally
+                {
+                    ReturnPluginScanList(list);
                 }
             }
             return totalHeal;
@@ -2067,8 +2184,16 @@ namespace GameSvr.Plugins
         public int SubTempAttr(int range, int tx, int ty, int value, int duration, int attrId, int roleId, int effect)
         {
             if (!TunnelGate()) return 0;
-            foreach (var t in FindTargets(tx, ty, range, true))
-                ModifyStat(t, attrId, -value, duration);
+            var subTargets = FindTargets(tx, ty, range, true);
+            try
+            {
+                foreach (var t in subTargets)
+                    ModifyStat(t, attrId, -value, duration);
+            }
+            finally
+            {
+                ReturnPluginScanList(subTargets);
+            }
             return value;
         }
 
@@ -2076,8 +2201,16 @@ namespace GameSvr.Plugins
         public int AddTempAttr(int range, int tx, int ty, int value, int duration, int attrId, int roleId, int effect, int isOther)
         {
             if (!TunnelGate()) return 0;
-            foreach (var t in FindTargets(tx, ty, range, true))
-                ModifyStat(t, attrId, value, duration);
+            var addTargets = FindTargets(tx, ty, range, true);
+            try
+            {
+                foreach (var t in addTargets)
+                    ModifyStat(t, attrId, value, duration);
+            }
+            finally
+            {
+                ReturnPluginScanList(addTargets);
+            }
             return value;
         }
 
@@ -2085,12 +2218,20 @@ namespace GameSvr.Plugins
         public int AddTempAttrPro(int range, int tx, int ty, int value, int duration, int attrId, int roleId, int effect, int isOther, int types)
         {
             if (!TunnelGate()) return 0;
-            foreach (var t in FindTargets(tx, ty, range, true))
+            var proTargets = FindTargets(tx, ty, range, true);
+            try
             {
-                // types filter: 0=all, 1=monster only, 2=player only
-                if (types == 1 && t.m_btRaceServer == Grobal2.RC_PLAYOBJECT) continue;
-                if (types == 2 && t.m_btRaceServer != Grobal2.RC_PLAYOBJECT) continue;
-                ModifyStat(t, attrId, value, duration);
+                foreach (var t in proTargets)
+                {
+                    // types filter: 0=all, 1=monster only, 2=player only
+                    if (types == 1 && t.m_btRaceServer == Grobal2.RC_PLAYOBJECT) continue;
+                    if (types == 2 && t.m_btRaceServer != Grobal2.RC_PLAYOBJECT) continue;
+                    ModifyStat(t, attrId, value, duration);
+                }
+            }
+            finally
+            {
+                ReturnPluginScanList(proTargets);
             }
             return value;
         }
@@ -2347,10 +2488,17 @@ namespace GameSvr.Plugins
                 if (slave == null) continue;
                 // Set target for slave to follow and attack
                 if (roleId == 0) { slave.m_TargetCret = null; continue; }
-                var list = new List<TBaseObject>();
-                _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 30, true, list);
-                foreach (var t in list)
-                    if (t.ObjectId == roleId) { slave.m_TargetCret = t; break; }
+                var list = RentPluginScanList();
+                try
+                {
+                    _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 30, true, list);
+                    foreach (var t in list)
+                        if (t.ObjectId == roleId) { slave.m_TargetCret = t; break; }
+                }
+                finally
+                {
+                    ReturnPluginScanList(list);
+                }
             }
             return roleId;
         }
@@ -3471,16 +3619,23 @@ namespace GameSvr.Plugins
             var map = M2Share.MapManager.FindMap(mapName);
             if (map == null) return 0;
 
-            var list = new List<TBaseObject>();
-            M2Share.UserEngine.GetMapMonster(map, list);
-
-            int killed = 0;
-            foreach (var target in list)
+            var list = RentPluginScanList();
+            try
             {
-                if (!NameMatches(target, monName)) continue;
-                if (KillRoleSilently(target)) killed++;
+                M2Share.UserEngine.GetMapMonster(map, list);
+
+                int killed = 0;
+                foreach (var target in list)
+                {
+                    if (!NameMatches(target, monName)) continue;
+                    if (KillRoleSilently(target)) killed++;
+                }
+                return killed;
             }
-            return killed;
+            finally
+            {
+                ReturnPluginScanList(list);
+            }
         }
 
         public TPlayObject FindPlayerByName(string humanName)
@@ -3889,44 +4044,51 @@ namespace GameSvr.Plugins
             var caster = player ?? _player;
             if (caster == null || caster.m_PEnvir == null || distance <= 0) return 0;
 
-            var targets = new List<TBaseObject>();
-            if (roleId > 0)
+            var targets = RentPluginScanList();
+            try
             {
-                var target = FindObjectById(roleId);
-                if (target == null || target.m_PEnvir != caster.m_PEnvir
-                    || !caster.IsProperTarget(target)) return 0;
-                targetX = target.m_nCurrX;
-                targetY = target.m_nCurrY;
-                targets.Add(target);
+                if (roleId > 0)
+                {
+                    var target = FindObjectById(roleId);
+                    if (target == null || target.m_PEnvir != caster.m_PEnvir
+                        || !caster.IsProperTarget(target)) return 0;
+                    targetX = target.m_nCurrX;
+                    targetY = target.m_nCurrY;
+                    targets.Add(target);
+                }
+                else
+                {
+                    caster.m_PEnvir.GetRangeBaseObject(targetX, targetY, Math.Max(0, range), canl != 0, targets);
+                }
+
+                if (canl > 0 && ChebyshevDistance(caster.m_nCurrX, caster.m_nCurrY,
+                        targetX, targetY) > canl)
+                    return 0;
+
+                if (targets.Count == 0) return 0;
+
+                var applyAll = isQun == 0 && targets.Count > 1;
+                if (applyAll && M2Share.RandomNumber.Random(100) >= probability)
+                    return 0;
+
+                int moved = 0;
+                foreach (var target in targets)
+                {
+                    if (target == null || target.m_boDeath || ReferenceEquals(target, caster)
+                        || target.m_PEnvir != caster.m_PEnvir || !caster.IsProperTarget(target)) continue;
+                    if (!applyAll && M2Share.RandomNumber.Random(100) >= probability) continue;
+
+                    var pushDir = direction == 0
+                        ? M2Share.GetNextDirection(caster.m_nCurrX, caster.m_nCurrY, target.m_nCurrX, target.m_nCurrY)
+                        : M2Share.GetNextDirection(target.m_nCurrX, target.m_nCurrY, caster.m_nCurrX, caster.m_nCurrY);
+                    moved += target.CharPushed(pushDir, distance);
+                }
+                return moved;
             }
-            else
+            finally
             {
-                caster.m_PEnvir.GetRangeBaseObject(targetX, targetY, Math.Max(0, range), canl != 0, targets);
+                ReturnPluginScanList(targets);
             }
-
-            if (canl > 0 && ChebyshevDistance(caster.m_nCurrX, caster.m_nCurrY,
-                    targetX, targetY) > canl)
-                return 0;
-
-            if (targets.Count == 0) return 0;
-
-            var applyAll = isQun == 0 && targets.Count > 1;
-            if (applyAll && M2Share.RandomNumber.Random(100) >= probability)
-                return 0;
-
-            int moved = 0;
-            foreach (var target in targets)
-            {
-                if (target == null || target.m_boDeath || ReferenceEquals(target, caster)
-                    || target.m_PEnvir != caster.m_PEnvir || !caster.IsProperTarget(target)) continue;
-                if (!applyAll && M2Share.RandomNumber.Random(100) >= probability) continue;
-
-                var pushDir = direction == 0
-                    ? M2Share.GetNextDirection(caster.m_nCurrX, caster.m_nCurrY, target.m_nCurrX, target.m_nCurrY)
-                    : M2Share.GetNextDirection(target.m_nCurrX, target.m_nCurrY, caster.m_nCurrX, caster.m_nCurrY);
-                moved += target.CharPushed(pushDir, distance);
-            }
-            return moved;
         }
 
         private static string SerializeItemData(TUserItem item)
@@ -3991,10 +4153,17 @@ namespace GameSvr.Plugins
             if (roleId == 0 || roleId == _player.ObjectId) target = _player;
             else
             {
-                var list = new List<TBaseObject>();
-                _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
-                foreach (var t in list)
-                    if (t.ObjectId == roleId) { target = t; break; }
+                var list = RentPluginScanList();
+                try
+                {
+                    _player.m_PEnvir?.GetRangeBaseObject(_player.m_nCurrX, _player.m_nCurrY, 20, true, list);
+                    foreach (var t in list)
+                        if (t.ObjectId == roleId) { target = t; break; }
+                }
+                finally
+                {
+                    ReturnPluginScanList(list);
+                }
             }
             if (target == null) return 0;
             return type switch
@@ -4199,8 +4368,16 @@ namespace GameSvr.Plugins
             else
             {
                 // Send to a single target or self
-                foreach (var t in FindTargets(tx, ty, Math.Max(range, 1), true))
-                    t.SendRefMsg(Grobal2.RM_MAGICFIRE, (short)effectId, (short)tx, (short)ty, 0, "");
+                var fxTargets = FindTargets(tx, ty, Math.Max(range, 1), true);
+                try
+                {
+                    foreach (var t in fxTargets)
+                        t.SendRefMsg(Grobal2.RM_MAGICFIRE, (short)effectId, (short)tx, (short)ty, 0, "");
+                }
+                finally
+                {
+                    ReturnPluginScanList(fxTargets);
+                }
             }
             return effectId;
         }
@@ -4213,6 +4390,8 @@ namespace GameSvr.Plugins
             var targets = FindTargets(x, y, range, true);
             int dmg = cutting;
             int count = 0;
+            try
+            {
             foreach (var t in targets)
             {
                 if (t == null || t.m_boDeath) continue;
@@ -4227,6 +4406,11 @@ namespace GameSvr.Plugins
                 if (count >= times) break;
                 // For splash (js=1), damage decreases with each bounce
                 if (js == 1) dmg = dmg * 70 / 100;
+            }
+            }
+            finally
+            {
+                ReturnPluginScanList(targets);
             }
             return count;
         }
@@ -4303,16 +4487,23 @@ namespace GameSvr.Plugins
                 map = M2Share.MapManager?.FindMap(mapName);
             if (map == null) return 0;
             int count = 0;
-            var list = new List<TBaseObject>();
-            M2Share.UserEngine.GetMapMonster(map, list);
-            foreach (var m in list)
+            var list = RentPluginScanList();
+            try
             {
-                if (m?.m_sCharName == null) continue;
-                if (string.IsNullOrEmpty(monName)
-                    || m.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
-                    count++;
+                M2Share.UserEngine.GetMapMonster(map, list);
+                foreach (var m in list)
+                {
+                    if (m?.m_sCharName == null) continue;
+                    if (string.IsNullOrEmpty(monName)
+                        || m.m_sCharName.IndexOf(monName, StringComparison.OrdinalIgnoreCase) >= 0)
+                        count++;
+                }
+                return count;
             }
-            return count;
+            finally
+            {
+                ReturnPluginScanList(list);
+            }
         }
 
         /// <summary>

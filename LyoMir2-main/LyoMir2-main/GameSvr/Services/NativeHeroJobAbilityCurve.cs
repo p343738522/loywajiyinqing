@@ -31,6 +31,12 @@
 // `movzx edx, word [ebx+0x1FC]` → `call sub_6884C0` → `mov [ebx+0x244], eax`,
 // 即等级驱动的重算。所以这条路是活的,不是死代码。
 //
+// RecalcAbilitys = VMT+0x8C = sub_73D500,是装备聚合,不调 +0x2B8。把本曲线
+// 接进 RecalcAbilitys 会在每次换装上重写 m_Abil,并与 RecalcLevelAbilitys 双加。
+// 驱动已接到三个原生站点,每处都是 Apply 紧跟 RecalcAbilitys,不进 +0x8C:
+//   0x687218 THeroAct VMT+0x240 (GrantNativeHeroExperience 升级循环)
+//   0x687E61 / 0x687F47 THeroAct VMT+0x078 (RecalcAndSendNativeLogonAbility ×2)
+//
 // sub_690300 逐字节 (0x690300-0x690368):
 //   690305  lea  esi, [eax+0x1E8]              ; 能力块
 //   69030B  mov  edx, dword ptr [eax+0x128]    ; 【地图对象】,不是武器记录
@@ -89,7 +95,8 @@ using SystemModule;
 namespace GameSvr.Services
 {
     /// <summary>
-    /// 玩家英雄三职业(战/法/道)的 VMT+0x2B8 成长曲线,纯函数。
+    /// 玩家英雄三职业(战/法/道)的 VMT+0x2B8 成长曲线。
+    /// <see cref="Apply"/> 是 THeroAct VMT+0x2C = sub_690300 的写出面。
     /// 职业字节取值来自工厂 switch @0x6521FD 的 <c>record[+0x22]</c>:
     /// 0=TWarHero、1=TMagHero、2=TTaosHero(与 M2Share.jWarr/jWizard/jTaos 一致)。
     /// </summary>
@@ -127,8 +134,8 @@ namespace GameSvr.Services
         /// 原版 <c>sub_690300</c>(THeroAct VMT+0x2C)算出的 (hi, lo) 对。
         /// 常态两者都是英雄等级;只有当地图 LIMITHEROLEVEL 生效时 lo 变成地图上限。
         /// <paramref name="mapHeroLevelLimit"/> / <paramref name="mapPlayerLevelLimit"/>
-        /// 对应 [map+0xC0] / [map+0xBE];C# 侧尚无这两个地图字段,故默认 0 = 未设置,
-        /// 走 0x690357 的不加盖分支(与当前 C# 行为一致,不发明封顶)。
+        /// 对应 [map+0xC0] / [map+0xBE](<c>TMapFlag.LimitHeroLevel</c> /
+        /// <c>LimitPlayerLevel</c>)。地图为空或上限为 0 时走 0x690357 不加盖分支。
         /// </summary>
         public static (int Hi, int Lo) ResolveLevelPair(int heroLevel,
             int masterLevel, int mapHeroLevelLimit = 0, int mapPlayerLevelLimit = 0)
@@ -146,6 +153,29 @@ namespace GameSvr.Services
 
             // 690357/69035B: hi = lo = 英雄等级
             return (heroLevel, heroLevel);
+        }
+
+        /// <summary>
+        /// <c>sub_690300</c> 的写出面:先 <see cref="ResolveLevelPair"/>,再
+        /// <see cref="Calculate"/>,把 VMT+0x2B8 结果写进能力块。不碰当前 HP/MP。
+        /// </summary>
+        public static void Apply(TAbility abil, int job, int heroLevel, int masterLevel,
+            int mapHeroLevelLimit = 0, int mapPlayerLevelLimit = 0)
+        {
+            ArgumentNullException.ThrowIfNull(abil);
+            var (hi, lo) = ResolveLevelPair(heroLevel, masterLevel,
+                mapHeroLevelLimit, mapPlayerLevelLimit);
+            var result = Calculate(job, hi, lo);
+            abil.MaxHP = result.MaxHp;
+            abil.MaxMP = result.MaxMp;
+            abil.MaxWeight = (ushort)result.MaxWeight;
+            abil.MaxWearWeight = (ushort)result.MaxWearWeight;
+            abil.MaxHandWeight = (ushort)result.MaxHandWeight;
+            abil.DC = HUtil32.MakeLong(result.DcLow, result.DcHigh);
+            abil.MC = HUtil32.MakeLong(result.McLow, result.McHigh);
+            abil.SC = HUtil32.MakeLong(result.ScLow, result.ScHigh);
+            abil.AC = HUtil32.MakeLong(result.AcLow, result.AcHigh);
+            abil.MAC = HUtil32.MakeLong(result.MacLow, result.MacHigh);
         }
 
         /// <summary>

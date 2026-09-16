@@ -75,7 +75,7 @@ static void VerifyInternalCertificationRecogIsZero()
     var zeroRecog = Position(relayDown, "Recog = 0", createPacket);
     var ident1018 = Position(relayDown, "Ident = 1018", zeroRecog);
     var serializePacket = Position(relayDown,
-        "Buffer.BlockCopy(cp.GetBuffer()", ident1018);
+        "WriteClientPacketHeader(pktBody.AsSpan(0, ClientPacket.PackSize), cp);", ident1018);
     var sendCertification = Position(relayDown,
         "SendGameSvrCertificationOnce(pkt.ToBytes(),", serializePacket);
     InOrder("SM_STARTPLAY certification must follow client 525 and use Recog=0/Ident=1018",
@@ -219,7 +219,7 @@ static void VerifyTwoPhaseLoginRelease()
     var createPacket = Position(relayUp,
         "var cp = CreateGameSvrClientPacket(mf.Inner, fwdIdent);");
     var allocateBody = Position(relayUp,
-        "var gsBody = new byte[ClientPacket.PackSize + bodyToSend.Length];",
+        "var gsBodyLen = ClientPacket.PackSize + bodyToSend.Length;",
         createPacket);
     var copyBody = Position(relayUp,
         "Buffer.BlockCopy(bodyToSend, 0, gsBody, ClientPacket.PackSize, bodyToSend.Length);",
@@ -323,7 +323,7 @@ static void VerifyGameDataFrameLimit()
 
     var source = GateServerSource();
     Require(source,
-        "if (payload.Length > NativeGameGateCommands.NativeM2MaximumBodyLength)",
+        "if (length > NativeGameGateCommands.NativeM2MaximumBodyLength)",
         "GGCS game-data factory does not reject oversized native M2 payloads");
     var gateService = RepositorySource("GameSvr", "GameGate", "GateService.cs");
     Require(gateService,

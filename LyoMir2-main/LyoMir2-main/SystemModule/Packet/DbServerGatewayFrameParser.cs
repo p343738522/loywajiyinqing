@@ -83,6 +83,14 @@ namespace SystemModule.Packet
             out List<DbServerGatewayFrame> frames, out string error)
         {
             frames = new List<DbServerGatewayFrame>();
+            return TryAppend(data, offset, count, frames, out error);
+        }
+
+        public bool TryAppend(byte[] data, int offset, int count,
+            List<DbServerGatewayFrame> frames, out string error)
+        {
+            if (frames == null) throw new ArgumentNullException(nameof(frames));
+            frames.Clear();
             error = string.Empty;
 
             if (data == null || offset < 0 || count < 0

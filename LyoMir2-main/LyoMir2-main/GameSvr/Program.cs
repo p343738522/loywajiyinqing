@@ -18,6 +18,7 @@ namespace GameSvr
             try
             {
                 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                // Workstation/default GC is intentional until online comparison.
                 GCSettings.LatencyMode = GCSettings.IsServerGC ? GCLatencyMode.Batch : GCLatencyMode.Interactive;
 
                 Console.WriteLine("M2Server starting...");

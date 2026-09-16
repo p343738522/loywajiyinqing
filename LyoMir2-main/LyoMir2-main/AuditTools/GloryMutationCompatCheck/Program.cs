@@ -85,11 +85,15 @@ AssertDirectMessages(player, 6, "AddGloryPoint function");
 Equal(0, M2Share.LogStringList.Count,
     "AddGloryPoint function wrote a business log");
 var afterFunction = Snapshot(player.m_CreditCard, gloryVersion, creditVersion);
-Assert(!bridge.CallPlayerMethod("AddGloryPoint", addArgs),
-    "AddGloryPoint method shadowed the native function");
-Assert(Snapshot(player.m_CreditCard, gloryVersion, creditVersion)
-        .Equals(afterFunction),
-    "rejected AddGloryPoint method changed account state");
+player.m_MsgList.Clear();
+Assert(bridge.CallPlayerMethod("AddGloryPoint", addArgs),
+    "AddGloryPoint method was not dispatched");
+Equal(92, player.m_CreditCard.GloryPointValue,
+    "AddGloryPoint method account value");
+AssertDirectMessages(player, 6, "AddGloryPoint method");
+Equal(0, M2Share.LogStringList.Count,
+    "AddGloryPoint method wrote a business log");
+var afterMethod = Snapshot(player.m_CreditCard, gloryVersion, creditVersion);
 foreach (var invalidArgs in new[]
          {
              new List<PasValue>(),
@@ -101,8 +105,10 @@ foreach (var invalidArgs in new[]
         "AddGloryPoint function accepted a non-exact argument count");
     Assert(invalidResult.Type == PasValueType.Nil,
         "wrong-arity AddGloryPoint did not return Nil");
+    Assert(!bridge.CallPlayerMethod("AddGloryPoint", invalidArgs),
+        "AddGloryPoint method accepted a non-exact argument count");
     Assert(Snapshot(player.m_CreditCard, gloryVersion, creditVersion)
-            .Equals(afterFunction),
+            .Equals(afterMethod),
         "wrong-arity AddGloryPoint changed account state");
 }
 Assert(bridge.CallPlayerFunc("AddGloryPoint",
@@ -110,7 +116,7 @@ Assert(bridge.CallPlayerFunc("AddGloryPoint",
     "exact-arity zero AddGloryPoint was not handled");
 Assert(!zeroResult.AsBool(), "zero AddGloryPoint returned True");
 Assert(Snapshot(player.m_CreditCard, gloryVersion, creditVersion)
-        .Equals(afterFunction),
+        .Equals(afterMethod),
     "zero AddGloryPoint changed account state");
 
 Reset(player, gloryVersion, creditVersion, loaded: false, glory: 100,
@@ -190,7 +196,7 @@ Assert(genericSource.Contains("GiveGloryPoint, 888888, count, \"系统给予\"",
     "generic Give GloryPoint log shape changed");
 
 Console.WriteLine(
-    "PASS AddGloryPoint=function/exact-1 method=closed positive-only prompt=DB/FF " +
+    "PASS AddGloryPoint=function/exact-1 method=exact-1 positive-only prompt=DB/FF " +
     "unchecked=Int32 dirty=independent refresh=1 direct-log=0 give-logs=2x9/888888");
 return;
 

@@ -63,6 +63,9 @@ namespace GameSvr
     //   arms the lock. This C# server does NOT persist or load these DB fields (verified by cm-1:
     //   no +0x711 field, no CM 1068/1084, no SM_LOCKEQUIP), so every character stays disarmed
     //   (mode 0, inactive) — identical to a native character that has never set the 密宝 password.
+    //   NativeHumanDataCodec rec[0x48] is HP (dword @0x6AFFF3), not the 0x6B0A5F BYTE lock-mode
+    //   copy; GetHumData/MakeSaveRcd never touch _nativeEquipLockMode. SM 0x2733/0x2737 builders
+    //   (sub_765E68/sub_6B3EAC remaining-seconds) are also absent. Do not invent either hook.
     //   The lock-state fields below therefore default to their disarmed values; the gates key off them
     //   exactly as native, so 1068/1084 take the native no-op paths and no wire bytes are invented.
     //

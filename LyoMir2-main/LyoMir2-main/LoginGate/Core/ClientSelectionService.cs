@@ -153,6 +153,8 @@ internal sealed class ClientSelectionService
         var stream = client.GetStream();
         var parser = new LoginGateClientStreamParser();
         var buffer = new byte[1024];
+        var frames = new List<LoginGateClientFrame>(4);
+        byte[] encodeScratch = new byte[2048];
         var serverDataIndex = NextDataIndex();
         var session = new ClientSelectionSession(serverDataIndex);
         var remote = client.Client.RemoteEndPoint?.ToString() ?? "?";
@@ -167,11 +169,11 @@ internal sealed class ClientSelectionService
                 var read = await stream.ReadAsync(buffer, idle.Token).ConfigureAwait(false);
                 if (read == 0) break;
                 idle.CancelAfter(IdleTimeout);
-                var frames = new List<LoginGateClientFrame>();
+                frames.Clear();
                 parser.Append(buffer.AsSpan(0, read), frames.Add);
                 foreach (var frame in frames)
                 {
-                    await ProcessFrameAsync(stream, session, frame, idle.Token)
+                    await ProcessFrameAsync(stream, session, frame, encodeScratch, idle.Token)
                         .ConfigureAwait(false);
                     if (session.State == ClientSelectionState.Complete) break;
                 }
@@ -193,7 +195,8 @@ internal sealed class ClientSelectionService
 
     private async Task ProcessFrameAsync(NetworkStream stream,
         ClientSelectionSession session,
-        LoginGateClientFrame frame, CancellationToken cancellationToken)
+        LoginGateClientFrame frame, byte[] encodeScratch,
+        CancellationToken cancellationToken)
     {
         if (session.State == ClientSelectionState.AwaitingConnect)
         {
@@ -209,7 +212,7 @@ internal sealed class ClientSelectionService
                     groups.Select(group => (group.Name, group.Description)).ToArray(),
                     out var response, out error))
                 throw new InvalidDataException(error);
-            await WriteFrameAsync(stream, response, cancellationToken).ConfigureAwait(false);
+            await WriteFrameAsync(stream, response, encodeScratch, cancellationToken).ConfigureAwait(false);
             session.Area = area;
             session.State = ClientSelectionState.AwaitingSelection;
             return;
@@ -233,7 +236,7 @@ internal sealed class ClientSelectionService
         {
             _log("WARN", $"选服失败：区组名不匹配 '{selection.SelectedName}'");
             await WriteSelectErrorAsync(stream, session.ServerDataIndex, 4,
-                cancellationToken).ConfigureAwait(false);
+                encodeScratch, cancellationToken).ConfigureAwait(false);
             session.State = ClientSelectionState.Complete;
             return;
         }
@@ -250,7 +253,7 @@ internal sealed class ClientSelectionService
                 $"选服失败：Native77 :{_config.DBServerListen} 没有可用 GameGate/DBSvr 路由（需 2000 注册 + 2001 回端口）。series={select.ErrorSeries}");
             await WriteSelectErrorAsync(stream, session.ServerDataIndex,
                 select.ErrorSeries == 0 ? (byte)3 : select.ErrorSeries,
-                cancellationToken).ConfigureAwait(false);
+                encodeScratch, cancellationToken).ConfigureAwait(false);
             session.State = ClientSelectionState.Complete;
             return;
         }
@@ -266,19 +269,21 @@ internal sealed class ClientSelectionService
                 port, route.AreaIndex, route.GroupIndex, suffix,
                 out var jump, out var jumpError))
             throw new InvalidDataException(jumpError);
-        await WriteFrameAsync(stream, jump, cancellationToken).ConfigureAwait(false);
+        await WriteFrameAsync(stream, jump, encodeScratch, cancellationToken).ConfigureAwait(false);
         _log("INFO", $"选服完成：{groupSelection.Name} -> " +
                      $"{new IPAddress(route.Ipv4AddressBytes)}:{port}");
         session.State = ClientSelectionState.Complete;
     }
 
     private static async Task WriteSelectErrorAsync(NetworkStream stream,
-        uint dataIndex, byte errorSeries, CancellationToken cancellationToken)
+        uint dataIndex, byte errorSeries, byte[] encodeScratch,
+        CancellationToken cancellationToken)
     {
         if (!LoginGateWireProtocol.TryCreateSelectServerErrorFrame(
                 dataIndex, errorSeries, out var frame, out var error))
             throw new InvalidDataException(error);
-        await WriteFrameAsync(stream, frame, cancellationToken).ConfigureAwait(false);
+        await WriteFrameAsync(stream, frame, encodeScratch, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static string ReadSuffix(byte[] suffix)
@@ -292,12 +297,17 @@ internal sealed class ClientSelectionService
     }
 
     private static async Task WriteFrameAsync(NetworkStream stream,
-        LoginGateClientFrame frame, CancellationToken cancellationToken)
+        LoginGateClientFrame frame, byte[] encodeScratch,
+        CancellationToken cancellationToken)
     {
-        if (!LoginGateWireProtocol.TryEncodeClientFrame(frame,
-                out var wire, out var error))
+        var needed = LoginGateWireProtocol.ClientHeaderSize + frame.Payload.Length;
+        if (encodeScratch.Length < needed)
+            encodeScratch = new byte[needed];
+        if (!LoginGateWireProtocol.TryEncodeClientFrame(frame, encodeScratch,
+                out var written, out var error))
             throw new InvalidDataException(error);
-        await stream.WriteAsync(wire, cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(encodeScratch.AsMemory(0, written), cancellationToken)
+            .ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 

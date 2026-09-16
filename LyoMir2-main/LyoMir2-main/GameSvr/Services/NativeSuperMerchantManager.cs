@@ -15,7 +15,22 @@ namespace GameSvr.Services
         public const uint TickEa = 0x006160A4;
         public const uint LoadIniEa = 0x00616258;
         public const uint SaveIniEa = 0x00616484;
+        public const uint UnitPriceEa = 0x006161EC;   // sub_6161EC
+        public const uint GloryQuoteEa = 0x0061617C;  // sub_61617C
+        public const uint CommitAddEa = 0x00615F44;   // sub_615F44
+        public const uint QueryGloryEa = 0x006E4F60;  // QueryGloryPointByGoodsNum
+        public const uint SellGloryEa = 0x006E4FB0;   // SellGoodsToGetGloryPoint
+        public const uint BuyYbEa = 0x006E5104;       // ConsumeYBToBuyGoods CLOSED: missing Ident-125 reply body + delivery sub_6D5344@0x6D56E0
         public const int RefreshIntervalMs = 0xDBBA0; // 900000 ms @0x6160AF
+        // 0x616254 = 00 00 B3 42 (single). 0x616248 tbyte documented as 10.242.
+        public const float BasePriceSingle = 89.5f;
+        public const double LnCoefficient = 10.242;
+
+        public const int SellMismatch = -1;
+        public const int SellBagShort = -2;
+        public const int SellStorageRejected = -3;
+        public const int SellTakeFailed = -4;
+        public const int SellOk = 1;
 
         private const string IniRelativePath = "Config\\SuperMerchant.ini";
         private const string BroadcastTitle = "大药商人"; // 0x61612C
@@ -32,8 +47,8 @@ namespace GameSvr.Services
         private readonly NativeSuperMerchantSlot[] _slots =
         {
             new(), // index 0 unused; native loops ebx=1..2
-            new(20, 2500, 1000), // ctor defaults @0x615FC4
-            new(20, 2500, 1000)
+            new(20, 2500, 1000, "疗伤药包"), // ctor defaults @0x615FC4
+            new(20, 2500, 1000, "万年雪霜包")
         };
 
         private int _lastTick;
@@ -106,12 +121,92 @@ namespace GameSvr.Services
             }
         }
 
+        public string GetGoodsName(int goodsType)
+        {
+            lock (_sync)
+                return GetGoodsNameUnlocked(goodsType);
+        }
+
+        public int GetCurrentStorage(int goodsType)
+        {
+            lock (_sync)
+            {
+                if (goodsType is < 1 or > 2)
+                    return 0;
+                return _slots[goodsType].Current;
+            }
+        }
+
+        /// <summary>
+        /// sub_615F44: <c>Current := Min(Current+delta, Max)</c>, dirty:=1, return 1.
+        /// Silent saturate at Max; type outside 1..2 returns 0.
+        /// </summary>
+        public bool TryCommitAdd(int goodsType, int delta)
+        {
+            lock (_sync)
+            {
+                if (goodsType is < 1 or > 2)
+                    return false;
+                var slot = _slots[goodsType];
+                var next = unchecked(slot.Current + delta);
+                if (next > slot.Max)
+                    next = slot.Max;
+                slot.Current = next;
+                _dirty = true;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// sub_6161EC: type ∉ {1,2} → 0.0; else 89.5 − 10.242 × ln(Current).
+        /// Current ≤ 0 is outside ln's domain (native fyl2x of 0 is −inf); C# returns 0.
+        /// </summary>
+        public double ComputeUnitPrice(int goodsType)
+        {
+            lock (_sync)
+                return ComputeUnitPriceUnlocked(goodsType);
+        }
+
+        /// <summary>
+        /// sub_61617C: truncating fistp of unitPrice×qty (sub_403580, RC=11).
+        /// </summary>
+        public int ComputeGloryQuote(int goodsType, int goodsNum)
+        {
+            lock (_sync)
+                return TruncateNative(ComputeUnitPriceUnlocked(goodsType) * goodsNum);
+        }
+
+        private string GetGoodsNameUnlocked(int goodsType)
+        {
+            if (goodsType is < 1 or > 2)
+                return string.Empty;
+            var name = _slots[goodsType].ItemName;
+            return string.IsNullOrEmpty(name) ? DefaultGoodsNames[goodsType] : name;
+        }
+
+        private double ComputeUnitPriceUnlocked(int goodsType)
+        {
+            if (goodsType is < 1 or > 2)
+                return 0.0;
+            var current = _slots[goodsType].Current;
+            if (current <= 0)
+                return 0.0;
+            return (double)BasePriceSingle - LnCoefficient * Math.Log(current);
+        }
+
+        private static int TruncateNative(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+                return 0;
+            return (int)value;
+        }
+
         private void BroadcastRestock()
         {
             // 0x6160D4..0x616117: two world broadcasts via sub_79D3D8, dx=0xA.
             for (var type = 1; type <= 2; type++)
             {
-                var name = DefaultGoodsNames[type];
+                var name = GetGoodsNameUnlocked(type);
                 var current = _slots[type].Current;
                 var msg = string.Format(StockFmt.Replace("%s", "{0}").Replace("%d", "{1}"),
                     name, current);
@@ -143,6 +238,12 @@ namespace GameSvr.Services
                     continue;
                 var key = line[..eq].Trim();
                 var val = line[(eq + 1)..].Trim();
+                if (key.Equals("ItemName", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrWhiteSpace(val))
+                        _slots[type].ItemName = val;
+                    continue;
+                }
                 if (!int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture,
                         out var n))
                     continue;
@@ -170,7 +271,7 @@ namespace GameSvr.Services
             for (var type = 1; type <= 2; type++)
             {
                 lines.Add($"[GoodsInfo{type}]");
-                lines.Add($"ItemName={DefaultGoodsNames[type]}");
+                lines.Add($"ItemName={GetGoodsNameUnlocked(type)}");
                 lines.Add($"MinStorage={_slots[type].Min}");
                 lines.Add($"MaxStorage={_slots[type].Max}");
                 lines.Add($"CurrentStorage={_slots[type].Current}");
@@ -192,16 +293,19 @@ namespace GameSvr.Services
         private sealed class NativeSuperMerchantSlot
         {
             internal NativeSuperMerchantSlot() { }
-            internal NativeSuperMerchantSlot(int min, int max, int current)
+            internal NativeSuperMerchantSlot(int min, int max, int current,
+                string itemName)
             {
                 Min = min;
                 Max = max;
                 Current = current;
+                ItemName = itemName ?? string.Empty;
             }
 
             public int Min { get; set; }
             public int Max { get; set; }
             public int Current { get; set; }
+            public string ItemName { get; set; } = string.Empty;
         }
     }
 }

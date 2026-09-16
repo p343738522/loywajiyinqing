@@ -415,11 +415,11 @@ namespace GameSvr.Services
             return body;
         }
 
-        // SM 4612 (sub_6F772C / sub_7077C4 / sub_708004 / sub_708520):
-        // each queued notice is exactly one byte of subtype followed by a
-        // Delphi ShortString slot of 16 bytes (length + 15-byte GBK payload).
-        // The native sender uses count * 17 as the body length and emits no
-        // header record when the queue is empty.
+        // SM 4612 (sub_6F772C login drain / sub_7077C4 / sub_708004 / sub_708520
+        // online refuse): each notice is exactly one byte of subtype followed
+        // by a Delphi ShortString slot of 16 bytes (length + 15-byte GBK
+        // payload). The native sender uses count * 17 as the body length and
+        // emits no header record when the login queue is empty.
         internal static byte[] EncodePendingNotices(
             IReadOnlyList<NativeGildOfflineNotice> notices)
         {

@@ -71,8 +71,8 @@ AssertGloryPointRead(player, bridge, enabledCreditCard,
 var amountArgs = new List<PasValue> { PasValue.FromInt(10) };
 var playerTransactionNames = new[]
 {
-    "TakeDiamond", "AddDiamond", "CheckDiamond", "MakeDiamondWithYB",
-    "AddGloryPoint", "DecGloryPoint"
+    "AddDiamond", "CheckDiamond", "MakeDiamondWithYB",
+    "DecGloryPoint"
 };
 foreach (var name in playerTransactionNames)
     Assert(!bridge.CallPlayerMethod(name, amountArgs),
@@ -148,9 +148,15 @@ foreach (var forbidden in new[]
     Reject(gloryGetter, forbidden,
         $"GloryPoint getter must not depend on or mutate {forbidden}");
 RequireMatches(bridgeSource,
-    "case \\\"takediamond\\\":\\s*case \\\"adddiamond\\\":\\s*" +
+    "case \\\"takediamond\\\":(?:\\s*//[^\\r\\n]*)?\\s*" +
+    "if \\(args\\.Count >= 1\\)\\s*" +
+    "_ = CurrentPlayer\\.TakeNativeDiamond\\(args\\[0\\]\\.AsInt\\(\\)\\);\\s*" +
+    "return true;",
+    1, "TakeDiamond method dispatch must take count-only");
+RequireMatches(bridgeSource,
+    "case \\\"adddiamond\\\":(?:\\s*//[^\\r\\n]*)?\\s*" +
     "return RejectUnsupportedNativeApi\\(\\);",
-    1, "Diamond method dispatch must fail closed");
+    1, "AddDiamond method dispatch must fail closed");
 RequireMatches(bridgeSource,
     "case \\\"takediamond\\\":\\s*if \\(args\\.Count != 2\\) return false;\\s*" +
     "result = PasValue\\.FromBool\\(\\s*" +
@@ -173,13 +179,20 @@ RequireMatches(bridgeSource,
     "return RejectUnsupportedNativeApi\\(out result\\);",
     1, "MakeDiamondWithYB must fail closed");
 RequireMatches(bridgeSource,
-    "case \\\"addglorypoint\\\":\\s*case \\\"decglorypoint\\\":\\s*" +
-    "return RejectUnsupportedNativeApi\\(\\);",
-    1, "GloryPoint method dispatch must fail closed");
+    "case \\\"addglorypoint\\\":\\s*" +
+    "if \\(args\\.Count != 1\\) return false;\\s*" +
+    "_ = TryAddNativeGloryPoint\\(args\\[0\\]\\.AsInt\\(\\)\\);\\s*" +
+    "return true;",
+    1, "AddGloryPoint method dispatch must ignore bool result");
+RequireMatches(bridgeSource,
+    "case \\\"decglorypoint\\\":\\s*" +
+    "if \\(args\\.Count != 5\\) return false;\\s*" +
+    "_ = CurrentPlayer\\.DecNativeGloryPoint\\(",
+    1, "DecGloryPoint method dispatch must ignore bool result");
 RequireMatches(bridgeSource,
     "case \\\"decglorypoint\\\":\\s*" +
     "if \\(args\\.Count != 5\\) return false;[\\s\\S]{0,320}?" +
-    "CurrentPlayer\\.DecNativeGloryPoint\\(",
+    "result = PasValue\\.FromBool\\(CurrentPlayer\\.DecNativeGloryPoint\\(",
     1, "DecGloryPoint function must dispatch exact five parameters");
 RequireMatches(bridgeSource,
     "case \\\"clientquestgetdiam\\\":\\s*return RejectUnsupportedNativeApi\\(out result\\);",
@@ -201,8 +214,8 @@ AssertDispatchesHaveNoSubstitute(bridgeSource);
 
 Console.WriteLine(
     "PASS MyDiamondnum=bag-Dura/Integer/zero/null-safe TakeDiamond=func/exact2/Npc-unread " +
-    "GloryPoint=read-only/direct Loaded=ignored Enabled=ignored " +
-    "Int32=min/max AddMethod=closed DecFunction=exact5 DecMethod=closed side-effects=0");
+    "TakeMethod=count-only AddDiamond=closed GloryPoint=read-only/direct Loaded=ignored Enabled=ignored " +
+    "Int32=min/max AddMethod=exact1 DecFunction=exact5 DecMethod=exact5 side-effects=0");
 return;
 
 static void AssertGloryPointRead(TPlayObject player, PasApiBridge bridge,

@@ -156,9 +156,15 @@ namespace SystemModule
             => WriteFrame(inner, body, seq, MARKER_DATA);
 
         public static byte[] WriteFrame(InnerHeader inner, byte[] body, uint seq, ushort marker)
+            => WriteFrame(inner, body, 0, body?.Length ?? 0, seq, marker);
+
+        public static byte[] WriteFrame(InnerHeader inner, byte[] body, int bodyOffset,
+            int bodyLength, uint seq, ushort marker)
         {
-            int bodyLen = body?.Length ?? 0;
-            int payloadLen = INNER_SIZE + bodyLen;
+            int available = body?.Length ?? 0;
+            if (bodyOffset < 0 || bodyLength < 0 || bodyOffset > available - bodyLength)
+                throw new ArgumentOutOfRangeException(nameof(bodyLength));
+            int payloadLen = INNER_SIZE + bodyLength;
             if (payloadLen > MAX_PAYLOAD_SIZE)
                 throw new InvalidDataException($"44FF44FF payload exceeds {MAX_PAYLOAD_SIZE} bytes");
             int totalLen = HEADER_SIZE + payloadLen;
@@ -174,7 +180,7 @@ namespace SystemModule
             BitConverter.TryWriteBytes(new Span<byte>(buf, HEADER_SIZE + 6, 2), (short)inner.Param);
             BitConverter.TryWriteBytes(new Span<byte>(buf, HEADER_SIZE + 8, 2), (short)inner.Tag);
             BitConverter.TryWriteBytes(new Span<byte>(buf, HEADER_SIZE + 10, 2), (short)inner.Series);
-            if (bodyLen > 0) Buffer.BlockCopy(body, 0, buf, HEADER_SIZE + INNER_SIZE, bodyLen);
+            if (bodyLength > 0) Buffer.BlockCopy(body, bodyOffset, buf, HEADER_SIZE + INNER_SIZE, bodyLength);
             return buf;
         }
 

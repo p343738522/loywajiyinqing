@@ -52,6 +52,51 @@ namespace DBSvr
         private readonly INativeRenameCascadeService _renameCascade;
         private readonly object _gateLock = new();
 
+        // Socket and admission threads can re-enter; keep a per-thread stack.
+        [ThreadStatic]
+        private static Stack<List<TUserInfo>> _userScratchPool;
+
+        [ThreadStatic]
+        private static Stack<List<TGateInfo>> _gateScratchPool;
+
+        private static List<TUserInfo> RentUserScratchList()
+        {
+            var pool = _userScratchPool ??= new Stack<List<TUserInfo>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TUserInfo>(32);
+        }
+
+        private static void ReturnUserScratchList(List<TUserInfo> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_userScratchPool ??= new Stack<List<TUserInfo>>()).Push(list);
+        }
+
+        private static List<TGateInfo> RentGateScratchList()
+        {
+            var pool = _gateScratchPool ??= new Stack<List<TGateInfo>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TGateInfo>(8);
+        }
+
+        private static void ReturnGateScratchList(List<TGateInfo> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_gateScratchPool ??= new Stack<List<TGateInfo>>()).Push(list);
+        }
+
         // Native UserSoc workers receive Delphi AnsiString values built with
         // LStrFromPChar/strlen (0x404DF0).  That conversion terminates at the
         // first NUL, not only at a final padding terminator.  Keep this rule
@@ -284,7 +329,9 @@ namespace DBSvr
         private void DisconnectNativeGateByAddress(string gateAddress)
         {
             if (string.IsNullOrEmpty(gateAddress)) return;
-            var targets = new List<TUserInfo>();
+            var targets = RentUserScratchList();
+            try
+            {
             lock (_gateLock)
                 foreach (var gate in _gateList)
                 {
@@ -306,6 +353,11 @@ namespace DBSvr
                         Grobal2.SM_OUTOFCONNECTION_4018, 0, 0, 0, 0, null);
                 }
                 catch { }
+            }
+            }
+            finally
+            {
+                ReturnUserScratchList(targets);
             }
         }
 
@@ -521,8 +573,10 @@ namespace DBSvr
             _userSocket.Shutdown();
             lock (_nativeAccountTakeoverSync)
             {
-                var usersToCleanup = new List<TUserInfo>();
-                var gatesToComplete = new List<TGateInfo>();
+                var usersToCleanup = RentUserScratchList();
+                var gatesToComplete = RentGateScratchList();
+                try
+                {
                 lock (_gateLock)
                 {
                     foreach (var gate in _gateList)
@@ -553,6 +607,12 @@ namespace DBSvr
                     gate.NativeOutboundQueue?.Complete();
                 _nativeAccountOwners.Clear();
                 _nativeAdmission.ClearNativeIpCounts();
+                }
+                finally
+                {
+                    ReturnUserScratchList(usersToCleanup);
+                    ReturnGateScratchList(gatesToComplete);
+                }
             }
         }
 
@@ -716,8 +776,10 @@ namespace DBSvr
         {
             lock (_nativeAccountTakeoverSync)
             {
-                var usersToCleanup = new List<TUserInfo>();
+                var usersToCleanup = RentUserScratchList();
                 TGateInfo disconnectedGate = null;
+                try
+                {
                 lock (_gateLock)
                 {
                     for (var i = 0; i < _gateList.Count; i++)
@@ -749,6 +811,11 @@ namespace DBSvr
                 foreach (var user in usersToCleanup)
                     CleanupNativeAdmissionAndOwnership(user, false);
                 disconnectedGate?.NativeOutboundQueue?.Complete();
+                }
+                finally
+                {
+                    ReturnUserScratchList(usersToCleanup);
+                }
             }
         }
 

@@ -2149,7 +2149,7 @@ namespace SystemModule
         public const int SM_4480 = 4480; // 0x1180 member-broadcast wrapper 0x705954; sMsg text = "与"+<name>+"行会的行会战结束"; all-0 frame @0x7068AF
         public const int SM_4496 = 4496; // 0x1190 [obj+0x250] empty; Recog=esi(runtime, -1 default / 0x4177C0 result), all-0 @0x6FAD1B
         public const int SM_4499 = 4499; // 0x1193 [obj+0x250] sMsg text=esi(string arg); Recog=edi(int arg), all-0 @0x6FBD25
-        public const int SM_4612 = 4612; // 0x1204: login + queued refuse notice body; count*17 records {type + SS[15]} @0x6F781C; direct online sites remain deferred
+        public const int SM_4612 = 4612; // 0x1204: login drain @0x6F781C + online refuse (sub_7077C4/708520/708004); count*17 records {type + SS[15]}
         public const int SM_4614 = 4614; // 0x1206 member-broadcast wrapper 0x7059D0 ([0x254] variant); body=8 bytes (two dwords); Param=0 Tag=0 Series=1 Recog=0 @0x70214D
         public const int SM_4626 = 4626; // 0x1212 BLOCKED: [obj+0x254] count*0x40 record array filled by opaque serializer 0x7060B8; Buf=[ebp-0x1C] Len=[ebp-0x14]*0x40 @0x6AE363
         public const int SM_4638 = 4638; // 0x121E [obj+0x250] empty; Recog=0 all-0; sent to edx target!=nil @0x64E832
@@ -2203,13 +2203,13 @@ namespace SystemModule
         //   -- built (empty body unless noted) --
         public const int SM_2969 = 2969;  // 0xB99  RM-forward -> [obj+0x250] @0x6B5F3D
         public const int SM_2970 = 2970;  // 0xB9A  RM-forward -> [obj+0x250] @0x6B5F65 (0x254 serializer variant @0x6EB41C = gap)
+        public const int SM_4032 = 4032;  // 0xFC0  table broadcast -> [obj+0x254] @0x746D18 Recog=count Tag=[[0x7D5AEC]] body=count*0x2B
         public const int SM_4038 = 4038;  // 0xFC6  flag notify -> [obj+0x250] @0x746D3B/@0x746D56
         public const int SM_4070 = 4070;  // 0xFE6  -> [obj+0x250] @0x649072
         public const int SM_4205 = 4205;  // 0x106D SMS-auth reply -> [obj+0x250] (4 sites @0x654C3E..@0x6F023A)
         public const int SM_4206 = 4206;  // 0x106E -> [obj+0x250] @0x6F0496 (Recog 0)/@0x6F04F7 (Recog -1)
         //   -- fail-closed (BLOCKED, no builder; body/frame not evaluable at a mapped slot) --
         public const int SM_3412 = 3412;  // 0xD54  BLOCKED: mov dx @0x6EE22C -> call [obj+0xE0] @0x6EE234 (non-slot virtual)
-        public const int SM_4032 = 4032;  // 0xFC0  BLOCKED: [obj+0x254] @0x746D18, Buf/Len = [[0x7D6014]] 43-byte table record (undefined)
         public const int SM_4033 = 4033;  // 0xFC1  BLOCKED: [obj+0x254] @0x747362, 32-byte state-0x36 record from [self+0x5A8] (unmapped)
         public const int SM_4037 = 4037;  // 0xFC5  BLOCKED: [obj+0x254] @0x6B71ED, 24-byte body [self+0x60C]+[self+0x5A8] (unmapped)
 

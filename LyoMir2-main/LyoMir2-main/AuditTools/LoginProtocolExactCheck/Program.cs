@@ -147,6 +147,17 @@ static void CheckLogonBranchHasNoExtraPackets()
     block = baseSource[start..end];
     NotContains(block, "SM_ATTACKMODE", "SendLogon extra attack-mode packet");
     NotContains(block, "MakeWord", "SM_LOGON light packed into series");
+
+    start = baseSource.IndexOf("public void UserLogon()", StringComparison.Ordinal);
+    end = baseSource.IndexOf("private bool WeaptonMakeLuck()", start, StringComparison.Ordinal);
+    Assert(start >= 0 && end > start, "UserLogon source block not found");
+    var userLogon = baseSource[start..end];
+    Contains(userLogon, "SendSafeZoneInfo();", "UserLogon SM 4230 send");
+    var loginNow = userLogon.IndexOf("SendNativeLoginNow();", StringComparison.Ordinal);
+    var safeZone = userLogon.IndexOf("SendSafeZoneInfo();", StringComparison.Ordinal);
+    var replay = userLogon.IndexOf("ReplayNativeFixedCoordOnLogon();", StringComparison.Ordinal);
+    Assert(loginNow >= 0 && safeZone > loginNow && replay > safeZone,
+        "UserLogon SM 4230 sits between SM 889 and 定位石 replay");
 }
 
 static MethodInfo RequireMethod(string name, BindingFlags flags)

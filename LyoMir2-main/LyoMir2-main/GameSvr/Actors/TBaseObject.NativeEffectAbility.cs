@@ -117,6 +117,9 @@ namespace GameSvr
                         addAbility.NativeBreakPower + value));
                     break;
                 case 30:
+                    // Property 30 麻痹抗性 -> agg1+0x3C (sub_78E830 AddUInt16).
+                    // RecalcAbilitys projects wAntiPoison onto m_wEffectResistance
+                    // (native +0x26C), not word [self+0x180].
                     addAbility.wAntiPoison = unchecked((ushort)(
                         addAbility.wAntiPoison + value));
                     break;

@@ -1451,7 +1451,7 @@ namespace GameSvr
                 // in native order; an empty 3556 cold-time list stays silent.
                 SendMsg(this, Grobal2.RM_NATIVE_LOGON_STATE_SYNC, 0, 0, 0, 0, "");
                 // Native UserLogon @0x6B23C6 call 0x6F05D8, immediately before the
-                // 定位石 replay at 0x6B23E3. sub_6F05D8 first sends SM 888:
+                // 定位石 replay at 0x6B23E3. sub_6F05D8 sends three frames:
                 //   0x6F05E2 68 E7 03 00 00  push 0x3E7   ; Param=999
                 //   0x6F05E7 6A 00           push 0       ; Tag
                 //   0x6F05E9 6A 00           push 0       ; Series
@@ -1459,8 +1459,11 @@ namespace GameSvr
                 //   0x6F05ED B9 EA 03 00 00  mov ecx,0x3EA ; Recog=1002
                 //   0x6F05F2 66 BA 78 03     mov dx,0x378  ; ident 888
                 //   0x6F05FA FF 96 50 02 00 00 call [esi+0x250]
+                //   then SM 889 (SendNativeLoginNow), then SM 4230 (0x1086) via
+                //   [obj+0x254] Recog=Self; empty list still sends (0x6F06D8).
                 SendDefMessage(Grobal2.SM_LOGIN_VER, 0x3EA, 0x3E7, 0, 0, "");
                 SendNativeLoginNow();
+                SendSafeZoneInfo();
                 // 战神 replays the 定位石 marker in the same logon body, AFTER the social
                 // relink call at 0x6B21CF: 0x6B23E3 cmp byte [esi+0x18f8],0 / je skip,
                 // else re-push SM 0x3026 (0x6B23EC-0x6B2414) with X=[esi+0x1908] and
@@ -1786,11 +1789,7 @@ namespace GameSvr
             {
                 return;
             }
-            VisibleBaseObject = new TVisibleBaseObject
-            {
-                nVisibleFlag = 2,
-                BaseObject = BaseObject
-            };
+            VisibleBaseObject = RentVisibleBaseObject(BaseObject);
             m_VisibleActors.Add(VisibleBaseObject);
             if (BaseObject.m_btRaceServer == Grobal2.RC_PLAYOBJECT)
             {
@@ -1971,7 +1970,7 @@ namespace GameSvr
                             }
                         }
                         m_VisibleActors.RemoveAt(n18);
-                        Dispose(VisibleBaseObject);
+                        ReturnVisibleBaseObject(VisibleBaseObject);
                         continue;
                     }
                     if (m_btRaceServer == Grobal2.RC_PLAYOBJECT && VisibleBaseObject.nVisibleFlag == 2)
@@ -2011,7 +2010,7 @@ namespace GameSvr
                     {
                         SendMsg(this, Grobal2.RM_ITEMHIDE, 0, VisibleMapItem.MapItem.Id, VisibleMapItem.nX, VisibleMapItem.nY, "");
                         m_VisibleItems.RemoveAt(I);
-                        Dispose(VisibleMapItem);
+                        ReturnVisibleMapItem(VisibleMapItem);
                         continue;
                     }
                     if (VisibleMapItem.nVisibleFlag == 2)

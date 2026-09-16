@@ -7,3 +7,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("GameGateLegacyType20CompatCheck")]
 [assembly: InternalsVisibleTo("GameGateNativeSilentTypesCompatCheck")]
 [assembly: InternalsVisibleTo("GameGateNativeDbIntegrationCheck")]
+[assembly: InternalsVisibleTo("GateHotPathBufferCheck")]

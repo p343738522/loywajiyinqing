@@ -2,11 +2,15 @@ using System.Collections.Generic;
 
 namespace GameSvr
 {
-    // Dormant, evidence-backed model of the native 白猪商城 / "SeeShop" (元宝 premium mall) client
+    // Evidence-backed model of the native 白猪商城 / "SeeShop" (元宝 premium mall) client
     // WRITE-family handlers CM_REQSEESHOP(1046) / CM_RENEWSEESHOP(1047) / CM_DOSHOP(1048) and the
-    // local goods-DELIVERY core. Hex-Rays verified against M2Server (image base 0x00400000). This is
-    // the reversed ground-truth ladder used to verify the live TPlayObject.Mall / MallManager
-    // re-implementation; it is NOT wired and performs no writes.
+    // local goods-DELIVERY core. Hex-Rays verified against M2Server (image base 0x00400000).
+    // RenderReqSeeShop (1046) is the live query ladder: TPlayObject.ClientQueryWhitePigMall
+    // consults it through NativeShopQuery.EvaluateReqSeeShop. RenderRenewSeeShop (1047) is
+    // the live refresh ladder: TPlayObject.ClientRefreshWhitePigMall consults it through
+    // NativeShopQuery.EvaluateRenewSeeShop. 1048 and delivery stay as the reversed
+    // ground-truth used to verify TPlayObject.Mall / MallManager; they perform no currency
+    // writes. Payment settlement remains YBDB-6108 NO-GO.
     //
     // Native command dispatch (sub_6D7D68 @0x006D7D68):
     //   case 0x416 (1046 CM_REQSEESHOP)   -> sub_63A254(*(DWORD*)req, player)     // render 812/815

@@ -24,7 +24,9 @@ namespace GameSvr
         {
             TBaseObject BaseObject;
             MeltStone();
-            IList<TBaseObject> List10 = new List<TBaseObject>();
+            List<TBaseObject> List10 = RentMonsterScanList();
+            try
+            {
             GetMapBaseObjects(m_PEnvir, m_nCurrX, m_nCurrY, 7, List10);
             for (var i = 0; i < List10.Count; i++)
             {
@@ -36,6 +38,11 @@ namespace GameSvr
                         (BaseObject as ScultureMonster).MeltStone();
                     }
                 }
+            }
+            }
+            finally
+            {
+                ReturnMonsterScanList(List10);
             }
         }
 

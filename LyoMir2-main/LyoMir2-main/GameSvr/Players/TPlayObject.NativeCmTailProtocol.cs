@@ -142,13 +142,20 @@ namespace GameSvr
         /// sends SM 0xFC6 through [vmt+0x250] with Param = byte[[0x7D6938]] != 0
         /// (0x746D28 push 1 vs 0x746D43 push 0).
         ///
-        /// Neither the 0x2B-byte row format nor the table at [[0x7D6014]] exists
-        /// in this port, so the row count that decides between "send nothing" and
-        /// "send two packets" cannot be evaluated at all.
+        /// Rows are NativeShenYouAttributeConfig (sub_755350, 0x2B each).
+        /// [[0x7D6938]] is not a C# singleton, so SM 4038 Param stays 0.
         /// </summary>
         private void ClientNativeFixedRecordTableQuery()
         {
-            NativeCmTailFailClosed.Drop(Grobal2.CM_4125, m_sCharName);
+            var result = NativeShenYouAttributeConfig.Evaluate(
+                NativeShenYouAttributeConfig.Shared.Snapshot());
+            if (!result.SendTable)
+                return;
+
+            var table = BuildSm4032(result.Recog, result.Tag, result.Body);
+            SendSocket(table.Header, table.Body);
+            var flag = BuildSm4038(result.FlagParam);
+            SendSocket(flag.Header, flag.Body);
         }
 
         /// <summary>

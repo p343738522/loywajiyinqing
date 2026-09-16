@@ -231,11 +231,11 @@ namespace GameSvr
                 }
 
                 hero.HeroLevel = hero.m_Abil.Level;
-                // 0x687930 calls [vtbl+0x240] before 0x687936 re-reads the threshold, and that
-                // slot (0x6BDBD3) rewrites it from the level table -- without this the loop
-                // keeps subtracting the stale threshold and grants one level per 100 exp.
+                // THeroAct VMT+0x240: 0x68720E GetLevelExp -> [obj+0x244], then
+                // 0x687218 call [vmt+0x2C] (sub_690300 -> +0x2B8 curve), then
+                // call [vmt+0x8C] RecalcAbilitys. 0x687930 is this virtual slot.
                 hero.m_Abil.MaxExp = hero.GetLevelExp(hero.m_Abil.Level);
-                hero.RecalcLevelAbilitys();
+                hero.ApplyNativeHeroAbilityInit();
                 hero.RecalcAbilitys();
                 hero.SendMsg(hero, Grobal2.RM_LEVELUP, 0, hero.m_Abil.Exp,
                     previousLevel, 0, string.Empty);

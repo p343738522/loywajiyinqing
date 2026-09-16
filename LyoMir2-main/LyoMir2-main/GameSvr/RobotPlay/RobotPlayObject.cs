@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using SystemModule;
 using SystemModule.Common;
 
@@ -9,6 +10,45 @@ namespace GameSvr
     
     public partial class RobotPlayObject : TPlayObject
     {
+        // Attack-path catch logs; one line per site per process
+        // (same shape as NativeCm*FailClosed.Drop). Combat is unchanged.
+        private static readonly HashSet<string> ReportedAttackLogs =
+            new HashSet<string>(StringComparer.Ordinal);
+
+        private static void LogAttackOnce(string key, string message)
+        {
+            lock (ReportedAttackLogs)
+            {
+                if (!ReportedAttackLogs.Add(key))
+                    return;
+            }
+            M2Share.MainOutMessage(message);
+        }
+
+        // ActThink can Rent from several walk-steps on one tick; keep a
+        // per-thread stack rather than a single shared list.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _rangeScanPool;
+
+        private static List<TBaseObject> RentRangeScanList()
+        {
+            var pool = _rangeScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(32);
+        }
+
+        private static void ReturnRangeScanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_rangeScanPool ??= new Stack<List<TBaseObject>>()).Push(list);
+        }
+
         public long m_dwSearchTargetTick = 0;
         
         
@@ -1707,7 +1747,9 @@ namespace GameSvr
         {
             int result = 0;
             TBaseObject BaseObject;
-            IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+            List<TBaseObject> BaseObjectList = RentRangeScanList();
+            try
+            {
             if (m_PEnvir.GetMapBaseObjects(nX, nY, nRange, BaseObjectList))
             {
                 for (var i = BaseObjectList.Count - 1; i >= 0; i--)
@@ -1719,6 +1761,11 @@ namespace GameSvr
                     }
                 }
                 result = BaseObjectList.Count;
+            }
+            }
+            finally
+            {
+                ReturnRangeScanList(BaseObjectList);
             }
             return result;
         }
@@ -2070,7 +2117,8 @@ namespace GameSvr
             }
             catch (Exception)
             {
-                M2Share.MainOutMessage(format("TAIPlayObject.AutoSpell MagID:{0} X:{1} Y:{2}", new object[] { UserMagic.wMagIdx, nTargetX, nTargetY }));
+                LogAttackOnce("AutoSpell",
+                    format("TAIPlayObject.AutoSpell MagID:{0} X:{1} Y:{2}", new object[] { UserMagic.wMagIdx, nTargetX, nTargetY }));
             }
             return result;
         }

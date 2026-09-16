@@ -46,7 +46,7 @@ namespace GameSvr
             }
             catch
             {
-                M2Share.MainOutMessage("TAIPlayObject.WarrAttackTarget");
+                LogAttackOnce("WarrAttackTarget", "TAIPlayObject.WarrAttackTarget");
             }
             return result;
         }
@@ -203,7 +203,7 @@ namespace GameSvr
             }
             catch
             {
-                M2Share.MainOutMessage("TAIPlayObject.WizardAttackTarget");
+                LogAttackOnce("WizardAttackTarget", "TAIPlayObject.WizardAttackTarget");
             }
             return result;
         }
@@ -502,7 +502,7 @@ namespace GameSvr
             }
             catch
             {
-                M2Share.MainOutMessage("TAIPlayObject.AttackTarget");
+                LogAttackOnce("AttackTarget", "TAIPlayObject.AttackTarget");
             }
             return result;
         }

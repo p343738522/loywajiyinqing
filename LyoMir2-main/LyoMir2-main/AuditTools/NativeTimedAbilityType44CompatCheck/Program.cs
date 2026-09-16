@@ -18,13 +18,15 @@ CheckTwoPhaseExpiryOrder();
 CheckUnionTableAndDamageConsumer();
 CheckRuntimeOnlyState();
 CheckSourceContracts();
+CheckMonsterVmt198StayClosed();
 
 Console.WriteLine(
     "PASS timed-type44 PAS=player+hero+Word-coercion+low-byte-alias " +
     "internal=76 carrier=Int32-wrap baseline=fixed@146+item-property75 " +
     "packet=player+hero@A8 lifecycle=500ms+oldest-first+runtime-only " +
     "player=SM3555 hero=no-direct-SM3555 " +
-    "consumer=FASTNESS_UNION+raw154-flat+raw167-percent");
+    "consumer=FASTNESS_UNION+raw154-flat+raw167-percent " +
+    "monster-vmt198=CLOSED(0x66AE0C-nonunion 0x71B2F0-no-body) 46/74=CLOSED");
 return;
 
 static void CheckAdmissionAndPasAbi()
@@ -340,6 +342,64 @@ static void CheckSourceContracts()
     Require(app,
         @"FASTNESS_UNION\.txt[\s\S]{0,260}?if\s*\(fastnessUnionTable\.Load\(fastnessUnionPath\)\)[\s\S]{0,180}?Volatile\.Write\(ref\s+M2Share\.NativeFastnessUnionTable",
         "union table startup load does not preserve hot state on failure");
+}
+
+static void CheckMonsterVmt198StayClosed()
+{
+    var supported = typeof(TBaseObject).GetMethod(
+        "IsSupportedTimedAbilityType",
+        BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new MissingMethodException("IsSupportedTimedAbilityType");
+    bool IsSupported(int type) =>
+        (bool)(supported.Invoke(null, new object[] { type }) ?? false);
+    Assert(IsSupported(44), "type44 stays admitted");
+    Assert(!IsSupported(46), "type46 stays CLOSED");
+    Assert(!IsSupported(74), "type74 stays CLOSED");
+
+    string root = FindRepositoryRoot();
+    string arm = File.ReadAllText(Path.Combine(root, "GameSvr", "Monsters",
+        "Monster", "ArmLightGuard.cs"));
+    string ai = File.ReadAllText(Path.Combine(root, "GameSvr", "Monsters",
+        "AiMon.cs"));
+
+    Require(arm,
+        @"child 0x66AE0C[\s\S]{0,400}?MakePosion\(stateId=0x15",
+        "0x66AE0C dump is not a union calculator");
+    Require(arm,
+        @"0x66AE0C[\s\S]{0,1600}?fail-closed 原因",
+        "0x66AE0C stay fail-closed");
+    Require(arm, @"返回 dmg \*\*原值不变\*\*",
+        "0x66AE0C dump returns damage unchanged");
+    Require(ai,
+        @"fail-closed：[\s\S]{0,220}?slot102 \+0x198 -> 0x71B2F0",
+        "0x71B2F0 stay fail-closed");
+    Assert(!Regex.IsMatch(ai, @"0x71B2F0[\s\S]{0,500}?sub_741764"),
+        "0x71B2F0 unexpectedly treated as union sub_741764");
+    Assert(!Regex.IsMatch(ai,
+            @"0x71B2F0[\s\S]{0,400}?(MakePosion|mov eax,esi|ret 4)"),
+        "0x71B2F0 unexpectedly gained a complete body dump");
+
+    Assert(!DeclaresUnionDamage(typeof(ArmLightGuard)),
+        "ArmLightGuard must not declare a union VMT+0x198 override");
+    Assert(!DeclaresUnionDamage(typeof(AiMon)),
+        "AiMon must not declare a union VMT+0x198 override");
+
+    M2Share.RandomNumber ??= RandomNumber.GetInstance();
+    var attacker = new HeroObject();
+    Equal(3_000, ApplyUnionTargetDamage(new ArmLightGuard(), attacker, 1_000),
+        "ArmLightGuard 0x66AE0C must not rewrite union damage");
+    Equal(3_000, ApplyUnionTargetDamage(new AiMon(), attacker, 1_000),
+        "AiMon 0x71B2F0 must not rewrite union damage");
+}
+
+static bool DeclaresUnionDamage(Type type)
+{
+    const BindingFlags flags = BindingFlags.Instance | BindingFlags.Static |
+        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+    return type.GetMethods(flags).Any(method =>
+        method.Name is "ApplyNativeUnionDamageReductions"
+            or "ApplyNativeUnionTargetDamage"
+            or "ApplyNativeUnionTargetManaCost");
 }
 
 static Type44ProbePlayer NewPlayer(string name) => new()

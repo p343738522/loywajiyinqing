@@ -129,6 +129,40 @@ namespace LoginGate.Core
             out byte[] data, out string error)
         {
             data = Array.Empty<byte>();
+            if (!TryGetClientFrameLength(frame, out var written, out error))
+                return false;
+            data = new byte[written];
+            return TryEncodeClientFrame(frame, data, out _, out error);
+        }
+
+        public static bool TryEncodeClientFrame(LoginGateClientFrame? frame,
+            Span<byte> destination, out int written, out string error)
+        {
+            written = 0;
+            if (!TryGetClientFrameLength(frame, out written, out error))
+                return false;
+            if (destination.Length < written)
+            {
+                error = "LoginGate client encode buffer is too small";
+                written = 0;
+                return false;
+            }
+
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(0, 4), ClientMagic);
+            destination[4] = frame!.Flag;
+            destination[5] = frame.Command;
+            BinaryPrimitives.WriteUInt16LittleEndian(destination.Slice(6, 2),
+                (ushort)frame.Payload.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(destination.Slice(8, 4), frame.DataIndex);
+            if (frame.Payload.Length > 0)
+                frame.Payload.CopyTo(destination.Slice(ClientHeaderSize));
+            return true;
+        }
+
+        private static bool TryGetClientFrameLength(LoginGateClientFrame? frame,
+            out int written, out string error)
+        {
+            written = 0;
             error = string.Empty;
             if (frame == null)
             {
@@ -142,14 +176,7 @@ namespace LoginGate.Core
                 return false;
             }
 
-            data = new byte[ClientHeaderSize + frame.Payload.Length];
-            BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(0, 4), ClientMagic);
-            data[4] = frame.Flag;
-            data[5] = frame.Command;
-            BinaryPrimitives.WriteUInt16LittleEndian(data.AsSpan(6, 2),
-                (ushort)frame.Payload.Length);
-            BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(8, 4), frame.DataIndex);
-            frame.Payload.CopyTo(data, ClientHeaderSize);
+            written = ClientHeaderSize + frame.Payload.Length;
             return true;
         }
 

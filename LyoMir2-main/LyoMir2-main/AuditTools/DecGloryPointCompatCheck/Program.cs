@@ -33,12 +33,12 @@ var player = NewPlayer();
 var bridge = new PasApiBridge { CurrentPlayer = player };
 ResetPlayer(player, 1000, 11, 7, 21);
 var exactArgs = Args(30086, 100, 2, false, "荣耀兑换");
-var beforeMethod = Snapshot(player);
-Assert(!bridge.CallPlayerMethod("DecGloryPoint", exactArgs),
-    "DecGloryPoint method dispatcher was opened");
-Assert(Snapshot(player).Equals(beforeMethod),
-    "rejected DecGloryPoint method changed account state");
-AssertNoOutput(player, "rejected method");
+Assert(bridge.CallPlayerMethod("DecGloryPoint", exactArgs),
+    "DecGloryPoint method dispatcher was not opened");
+Equal(800, player.m_CreditCard.GloryPointValue,
+    "method remaining GloryPoint");
+Assert(player.m_CreditCard.GloryPointDirty,
+    "method transaction did not mark GloryPoint dirty");
 
 foreach (var invalidArgs in new[]
          {
@@ -244,7 +244,11 @@ var methodEnd = bridgeSource.IndexOf("case \"addguildpoint\":", methodStart,
     StringComparison.Ordinal);
 Assert(methodEnd > methodStart, "DecGloryPoint method dispatch end is missing");
 var methodSource = bridgeSource.Substring(methodStart, methodEnd - methodStart);
-Require(methodSource, "return RejectUnsupportedNativeApi();",
+Require(methodSource, "if (args.Count != 5) return false;",
+    "exact-five method dispatch");
+Require(methodSource, "CurrentPlayer.DecNativeGloryPoint(",
+    "native DecGloryPoint method target");
+Reject(methodSource, "RejectUnsupportedNativeApi",
     "method dispatcher remains closed");
 var functionStart = bridgeSource.IndexOf("case \"decglorypoint\":",
     methodDispatcherEnd, StringComparison.Ordinal);
@@ -272,7 +276,7 @@ Reject(managerSource, "SendServerGroupMsg",
     "GloryLog flush must not rebroadcast OtherGS 251");
 
 Console.WriteLine(
-    "PASS DecGloryPoint function=exact5 method=closed arithmetic=Int32-wrap " +
+    "PASS DecGloryPoint function=exact5 method=exact5 arithmetic=Int32-wrap " +
     "debit=atomic log=42 refresh=10054-once Value2=total/100 " +
     "active=(2,0,total,desc) GloryLog=sync/>10000/forced-flush/native-SQL " +
     "OtherGS251=receiver-only");

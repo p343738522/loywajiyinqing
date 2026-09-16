@@ -544,10 +544,12 @@ namespace GameSvr
             YanshenPangu2Patches.TryGetSiegeDayClock(out _, out _, out _,
                 out var siegeCaptureSec);
             if (m_nClockOfDaySec < siegeCaptureSec) return;
-            var humans = new List<TBaseObject>();
-            M2Share.UserEngine.GetMapRageHuman(m_MapPalace, 0, 0, 0x3E8, humans);
+            var humans = RentRageHumanList();
             Association firstGuild = null;
             var allSame = true;
+            try
+            {
+            M2Share.UserEngine.GetMapRageHuman(m_MapPalace, 0, 0, 0x3E8, humans);
             for (var i = 0; i < humans.Count; i++)
             {
                 var player = humans[i] as TPlayObject;
@@ -562,6 +564,11 @@ namespace GameSvr
                     allSame = false;
                     break;
                 }
+            }
+            }
+            finally
+            {
+                ReturnRageHumanList(humans);
             }
             if (!allSame || firstGuild == null || firstGuild == m_MasterGuild) return;
             if (!IsAttackGuild(firstGuild)) return;
@@ -651,10 +658,12 @@ namespace GameSvr
             {
                 return false;
             }
-            var playPbjectList = new List<TBaseObject>();
-            M2Share.UserEngine.GetMapRageHuman(m_MapPalace, 0, 0, 1000, playPbjectList);
+            var playPbjectList = RentRageHumanList();
             Association firstGuild = null;
             var result = true;
+            try
+            {
+            M2Share.UserEngine.GetMapRageHuman(m_MapPalace, 0, 0, 1000, playPbjectList);
             for (var i = 0; i < playPbjectList.Count; i++)
             {
                 var playObject = (TPlayObject)playPbjectList[i];
@@ -670,7 +679,11 @@ namespace GameSvr
                     break;
                 }
             }
-            playPbjectList = null;
+            }
+            finally
+            {
+                ReturnRageHumanList(playPbjectList);
+            }
             if (!result || firstGuild == null || firstGuild != guild) return false;
             if (firstGuild == m_MasterGuild) return false;
             return true;
@@ -729,12 +742,19 @@ namespace GameSvr
         public void StartWallconquestWar()
         {
             TPlayObject PlayObject;
-            var ListC = new List<TBaseObject>();
+            var ListC = RentRageHumanList();
+            try
+            {
             M2Share.UserEngine.GetMapRageHuman(m_MapCastle, m_nHomeX, m_nHomeY, 0xC8, ListC);
             for (var i = 0; i < ListC.Count; i++)
             {
                 PlayObject = (TPlayObject)ListC[i];
                 PlayObject.RefShowName();
+            }
+            }
+            finally
+            {
+                ReturnRageHumanList(ListC);
             }
         }
 
@@ -754,7 +774,9 @@ namespace GameSvr
             // (=ChangePKStatus(false))，并在 sub_6ADAE4(player)!=[+0x48](行会≠主行会) 时调
             // sub_768C7C(player, homeMap)(=MapRandomMove)，最后广播。四个被调者身份均已确认。
             // 下面这段与之逐条对应，勿删。证据：staging/adjudicate_3_disputed_20260802.md。
-            var ListC = new List<TBaseObject>();
+            var ListC = RentRageHumanList();
+            try
+            {
             M2Share.UserEngine.GetMapRageHuman(m_MapCastle, m_nHomeX, m_nHomeY, 100, ListC);
             for (var i = 0; i < ListC.Count; i++)
             {
@@ -765,6 +787,11 @@ namespace GameSvr
                 {
                     PlayObject.MapRandomMove(PlayObject.m_sHomeMap, 0);
                 }
+            }
+            }
+            finally
+            {
+                ReturnRageHumanList(ListC);
             }
             var s14 = sWallWarStop;
             M2Share.UserEngine.SendBroadCastMsgExt(s14, MsgType.System);
@@ -1206,6 +1233,28 @@ namespace GameSvr
         private void SetTechLevel(int nLevel)
         {
             m_nTechLevel = nLevel;
+        }
+
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _rageHumanPool;
+
+        private static List<TBaseObject> RentRageHumanList()
+        {
+            var pool = _rageHumanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(64);
+        }
+
+        private static void ReturnRageHumanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_rageHumanPool ??= new Stack<List<TBaseObject>>()).Push(list);
         }
     }
 }

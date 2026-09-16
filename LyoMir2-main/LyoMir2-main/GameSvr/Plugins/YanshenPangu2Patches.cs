@@ -90,8 +90,17 @@ namespace GameSvr.Plugins
         {
             if (M2Share.UserEngine == null)
                 return;
-            var msgColor = (MsgColor)ResolveServerSayColor(color);
-            M2Share.UserEngine.SendBroadCastMsgWithColor(msg, msgColor, MsgType.Notice);
+            // Native 0x728913 SysMsg packed cx (stock 0x38FF/0xFFDB/0xFCFF/0xFDFF/0xFFFF/0xDF00).
+            // Do not cast that word to MsgColor: SysMsg Notice only switches Red/Green/Blue and
+            // would drop ServerSay bodies such as Mir200 `bzaction|TIPSBAR|...`.
+            var packed = ResolveServerSayColor(color);
+            foreach (var playObject in M2Share.UserEngine.PlayObjects)
+            {
+                if (playObject == null || playObject.m_boGhost)
+                    continue;
+                playObject.SendMsg(playObject, Grobal2.RM_SYSMESSAGE, 0,
+                    packed & 0xFF, (packed >> 8) & 0xFF, 0, msg);
+            }
         }
 
         // --- 火墙_时间：仅当 火墙设置时间上限 开时替换 0x7706B6 imul 前的秒数 ---

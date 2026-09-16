@@ -16,6 +16,8 @@
 using System.Reflection;
 using GameSvr;
 using GameSvr.CommandSystem;
+using GameSvr.Services;
+using SystemModule;
 
 PrepareRuntimeFiles();
 
@@ -346,6 +348,91 @@ Equal(2, gm.DieCalls, "Die permission 5 virtual call");
 
 dieCommand.Die(null, null);
 Equal(2, gm.DieCalls, "Die null player silent");
+
+// OutSay runtime: case 62 / sub_6BF260 mutes via NativeMirrorChatBan.Add
+// and ident 209, with no GM SysMsg on the success path.
+var oldDenySayMsgList = M2Share.g_DenySayMsgList;
+M2Share.g_DenySayMsgList = NativeMirrorChatBan.CreateStore();
+try
+{
+    var outSayAttribute = typeof(ShutupCommand)
+        .GetCustomAttribute<GameCommandAttribute>();
+    var outSayMethod = typeof(ShutupCommand).GetMethod(
+        nameof(ShutupCommand.Shutup));
+    Equal(true, outSayAttribute != null, "OutSay runtime command attribute");
+    Equal("OutSay", outSayAttribute.Name, "OutSay runtime name");
+    Equal(2, (int)outSayAttribute.nPermissionMin, "OutSay runtime permission");
+    Equal(true, outSayMethod != null, "OutSay runtime command method");
+    var outSayCommand = new ShutupCommand();
+    outSayCommand.Register(outSayAttribute, outSayMethod);
+
+    var muteGm = new TPlayObject
+    {
+        m_sCharName = "MuteGm",
+        m_btPermission = 2
+    };
+    Equal<string>(null, outSayCommand.Handle("bob 5", muteGm),
+        "OutSay return silent");
+    Equal(0, muteGm.m_MsgList.Count, "OutSay success queued no SysMsg");
+    Equal(true, NativeMirrorChatBan.Contains("bob"),
+        "OutSay mute table contains target");
+    Equal(1, NativeMirrorChatBan.Snapshot().Count, "OutSay added one mute row");
+    Equal(5, NativeMirrorChatBan.Snapshot()[0].RemainSeconds,
+        "OutSay explicit duration seconds");
+
+    muteGm.m_MsgList.Clear();
+    Equal<string>(null, outSayCommand.Handle(string.Empty, muteGm),
+        "OutSay empty name silent");
+    Equal(0, muteGm.m_MsgList.Count, "OutSay empty name queued no SysMsg");
+    Equal(1, NativeMirrorChatBan.Snapshot().Count,
+        "OutSay empty name leaves mute table unchanged");
+
+    muteGm.m_MsgList.Clear();
+    Equal<string>(null, outSayCommand.Handle("alice", muteGm),
+        "OutSay default duration silent");
+    Equal(0, muteGm.m_MsgList.Count, "OutSay default duration queued no SysMsg");
+    Equal(true, NativeMirrorChatBan.Contains("alice"),
+        "OutSay default mute table contains target");
+    Equal(10, NativeMirrorChatBan.Snapshot()
+            .Single(entry => entry.Name == "alice").RemainSeconds,
+        "OutSay default duration is 10 seconds");
+
+    muteGm.m_MsgList.Clear();
+    Equal<string>(null, outSayCommand.Handle("bob 0", muteGm),
+        "OutSay zero duration silent");
+    Equal(0, muteGm.m_MsgList.Count, "OutSay zero duration queued no SysMsg");
+    Equal(2, NativeMirrorChatBan.Snapshot().Count,
+        "OutSay zero duration leaves mute table unchanged");
+
+    outSayCommand.Shutup(null, null);
+    Equal(2, NativeMirrorChatBan.Snapshot().Count,
+        "OutSay null args leave mute table unchanged");
+    Equal(0, muteGm.m_MsgList.Count, "OutSay null args queued no SysMsg");
+
+    muteGm.m_btPermission = 1;
+    Equal(string.Empty, outSayCommand.Handle("bob 5", muteGm),
+        "OutSay permission 1 silent reject");
+    Equal(2, NativeMirrorChatBan.Snapshot().Count,
+        "OutSay permission rejection preserves mute table");
+
+    Equal(Grobal2.ISM_CHATPROHIBITION, 209, "OutSay native mute ident");
+    var encodeServerGroup = typeof(UserEngine).GetMethod(
+        "EncodeServerGroupMessage",
+        BindingFlags.Static | BindingFlags.NonPublic, null,
+        new[] { typeof(int), typeof(int), typeof(int), typeof(string) },
+        null);
+    Equal(true, encodeServerGroup != null,
+        "OutSay server-group encoder available");
+    Equal((string)encodeServerGroup.Invoke(null,
+        new object[] { Grobal2.ISM_CHATPROHIBITION,
+            M2Share.nServerIndex, 5, "bob" }),
+        "209/0/5/bob",
+        "OutSay ident 209 wire shape");
+}
+finally
+{
+    M2Share.g_DenySayMsgList = oldDenySayMsgList;
+}
 
 // ClearAllState
 Equal(NativePlayerAttrOutcome.Executed, NativeGmPlayerAttrCommands.Evaluate("ClearAllState", 5, new[] { "bob" }).Outcome, "ClearAllState found");

@@ -21,7 +21,10 @@ namespace GameSvr
                     {
                         // POIS-27 @0x674518: movzx eax,word [target+0x26C]; add eax,7; call Random;
                         // cmp eax,6 / jg skip => roll<=6 passes. HasState(0x1F) gate @0x6744E2.
-                        if (M2Share.RandomNumber.Random(m_TargetCret.m_btAntiPoison + 7) <= 6 && m_TargetCret.m_wStatusTimeArr[Grobal2.POISON_DECHEALTH] == 0)
+                        // +0x26C is m_wEffectResistance (IceDoor @0x674C12 / Attack.cs POIS-36),
+                        // not the byte projection m_btAntiPoison. MagGroupAmyounsul stays on
+                        // the legacy byte: native wMagicID 48 calls sub_76FBBC, unmapped.
+                        if (M2Share.RandomNumber.Random(m_TargetCret.m_wEffectResistance + 7) <= 6 && m_TargetCret.m_wStatusTimeArr[Grobal2.POISON_DECHEALTH] == 0)
                         {
                             m_TargetCret.MakePosion(Grobal2.POISON_DAMAGEARMOR, 30, 1);
                         }

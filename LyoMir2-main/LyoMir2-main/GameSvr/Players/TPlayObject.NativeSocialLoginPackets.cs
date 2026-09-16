@@ -54,13 +54,47 @@ namespace GameSvr
         // bytes {type byte + ShortString cap 15} when the offline-notice
         // queue at manager+0x24 is non-empty. TakePendingNoticesBody removes
         // the queue atomically before encoding, matching native's consume-on-
-        // login behavior; the online push sites remain separate call sites.
+        // login behavior.
         private void SendNativePendingNoticesOnLogon()
         {
             var body = CorpsService.TakePendingNoticesBody(
                 GetCachedNativeUserId());
             SendSocket(Grobal2.MakeDefaultMsg(Grobal2.SM_PENDING_NOTICE, 0, 0, 0, 0),
                 body);
+        }
+
+        // Online SM 4612 (sub_7077C4 JoinCorps refuse / sub_708520 JoinGild
+        // refuse / sub_708004 Union refuse): when the applicant is in the
+        // live player list, native sends the same 17-byte record through
+        // [obj+0x254] instead of appending it to manager[+0x24]. Frame is
+        // Recog=Param=Tag=Series=0, body = NativeCorpsWireCodec one-record
+        // encoding. Missing / ghost recipients stay queued (offline path).
+        internal static bool TrySendNativePendingNoticeOnline(long recipientId,
+            NativeGildOfflineNotice notice)
+        {
+            if (recipientId == 0 || notice == null) return false;
+            var player = ResolveOnlinePendingNoticeRecipient(recipientId);
+            if (player == null) return false;
+            var body = NativeCorpsWireCodec.EncodePendingNotices(
+                new[] { notice });
+            player.SendSocket(
+                Grobal2.MakeDefaultMsg(Grobal2.SM_PENDING_NOTICE, 0, 0, 0, 0),
+                body);
+            return true;
+        }
+
+        private static TPlayObject ResolveOnlinePendingNoticeRecipient(
+            long recipientId)
+        {
+            var players = M2Share.UserEngine?.PlayObjects;
+            if (players == null) return null;
+            foreach (var candidate in players)
+            {
+                if (candidate == null || candidate.m_boGhost) continue;
+                if (candidate.GetCachedNativeUserId() == recipientId)
+                    return candidate;
+            }
+            return null;
         }
     }
 }

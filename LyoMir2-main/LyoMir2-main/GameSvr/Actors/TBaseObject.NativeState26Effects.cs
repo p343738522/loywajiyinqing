@@ -36,6 +36,30 @@ namespace GameSvr
         internal int m_nNativeMagicHitHealChance;
         internal int m_nNativeOneShotMagicDamage;
 
+        // Area magic can nest with other scan loops on one tick; keep a
+        // per-thread stack rather than a single shared list.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _areaMagicScanPool;
+
+        private static List<TBaseObject> RentAreaMagicScanList()
+        {
+            var pool = _areaMagicScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(32);
+        }
+
+        private static void ReturnAreaMagicScanList(List<TBaseObject> list)
+        {
+            if (list == null) return;
+            list.Clear();
+            (_areaMagicScanPool ??= new Stack<List<TBaseObject>>()).Push(list);
+        }
+
         internal void QueueNativeMagicEffect(ushort dispatchCategory,
             TBaseObject target, int rawDamage, ushort skillId, short x,
             short y, byte range, bool arg0, byte flags,
@@ -329,7 +353,9 @@ namespace GameSvr
             if (m_PEnvir == null)
                 return;
 
-            var targets = new List<TBaseObject>();
+            var targets = RentAreaMagicScanList();
+            try
+            {
             GetMapBaseObjects(m_PEnvir, payload.X, payload.Y,
                 payload.Range, targets);
             int positiveCount = 0;
@@ -364,6 +390,11 @@ namespace GameSvr
             {
                 ApplyNativeMagicHitHealing();
                 ConsumeNativeOneShotMagicDamage(payload.SkillId);
+            }
+            }
+            finally
+            {
+                ReturnAreaMagicScanList(targets);
             }
         }
 

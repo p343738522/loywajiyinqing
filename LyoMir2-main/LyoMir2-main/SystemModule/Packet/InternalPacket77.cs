@@ -36,6 +36,9 @@ namespace SystemModule.Packet
         public ushort Cmd;       // +0x0C  ident/命令码 (原实现错放在 +0x0E)
         public ushort FrameLen;  // 帧总长 = HEADER_SIZE + BodyLen; 序列化时由 Payload 派生, 保留供调用方读写
         public byte[] Payload;   // +0x10  body (BodyLen 字节)
+        // -1 means Payload.Length. Scratch buffers may be longer than the
+        // serialized body; ToBytes then writes only this many payload bytes.
+        public int PayloadLength = -1;
 
         // 兼容字段: 不属于 16 字节传输头。它们是 Cmd=0x12 数据帧 body 内层子头
         // (Recog@body+0x00 / Ident@body+0x04 ...) 被旧实现误当作头字段(24字节头由此而来)。
@@ -79,7 +82,9 @@ namespace SystemModule.Packet
 
         public byte[] ToBytes()
         {
-            int bodyLen = Payload?.Length ?? 0;         // = 线缆 +0x0E
+            int available = Payload?.Length ?? 0;
+            int bodyLen = PayloadLength >= 0 ? PayloadLength : available;
+            if (bodyLen > available) bodyLen = available;
             int totalLen = HEADER_SIZE + bodyLen;
             var buf = new byte[totalLen];
             BitConverter.TryWriteBytes(new Span<byte>(buf, 0, 4), MAGIC);          // +0x00

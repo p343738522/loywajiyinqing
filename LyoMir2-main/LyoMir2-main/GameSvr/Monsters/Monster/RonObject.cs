@@ -15,7 +15,9 @@ namespace GameSvr
             TBaseObject BaseObject;
             short wHitMode = 0;
             GetAttackDir(m_TargetCret, ref m_btDirection);
-            IList<TBaseObject> xTargetList = new List<TBaseObject>();
+            List<TBaseObject> xTargetList = RentMonsterScanList();
+            try
+            {
             GetMapBaseObjects(m_PEnvir, m_nCurrX, m_nCurrY, 1, xTargetList);
             if (xTargetList.Count > 0)
             {
@@ -30,6 +32,11 @@ namespace GameSvr
                 }
             }
             SendRefMsg(Grobal2.RM_HIT, m_btDirection, m_nCurrX, m_nCurrY, 0, "");
+            }
+            finally
+            {
+                ReturnMonsterScanList(xTargetList);
+            }
         }
 
         public override void Run()

@@ -12,6 +12,7 @@ public static class TigerCodec
     private const string BASE_KEY = "1Y0lSUQMH+mbKXRTBtFiWvLx32/gNAzGr674oeyn5dCEp8jDqasI9VcwJPhufkOZ";
     private const string LH_SUFFIX = "|LH";
     private const long CHUNK_DIVISOR = 262144; // 64^3
+    private static readonly string[] RotatedKeys = CreateRotatedKeys();
 
     public const byte CMD_HEARTBEAT = 29;
 
@@ -21,19 +22,32 @@ public static class TigerCodec
         if (tigerData.EndsWith(LH_SUFFIX))
             tigerData = tigerData.Substring(0, tigerData.Length - LH_SUFFIX.Length);
 
-        string keyStr = GetRotatedKey(keyOffset);
-        var result = new List<byte>();
-        int pos = 0;
+        var scratch = new byte[tigerData.Length];
+        var written = DecodeChars(tigerData.AsSpan(), keyOffset, scratch);
+        if (written == 0) return Array.Empty<byte>();
+        if (written == scratch.Length) return scratch;
+        var exact = new byte[written];
+        Buffer.BlockCopy(scratch, 0, exact, 0, written);
+        return exact;
+    }
 
-        while (pos < tigerData.Length)
+    public static int Decode(ReadOnlySpan<byte> tigerAscii, uint keyOffset, Span<byte> destination)
+    {
+        if (tigerAscii.EndsWith("|LH"u8))
+            tigerAscii = tigerAscii[..^3];
+
+        string keyStr = GetRotatedKey(keyOffset);
+        int pos = 0;
+        int written = 0;
+
+        while (pos < tigerAscii.Length)
         {
             long value = 0;
             int charsInGroup = 0;
 
-            // Read up to 4 chars, stop at '=' (padding)
-            for (int i = 0; i < 4 && pos < tigerData.Length; i++)
+            for (int i = 0; i < 4 && pos < tigerAscii.Length; i++)
             {
-                char c = tigerData[pos];
+                char c = (char)tigerAscii[pos];
                 if (c == '=') { pos++; break; }
                 int idx = keyStr.IndexOf(c);
                 if (idx < 0)
@@ -46,13 +60,14 @@ public static class TigerCodec
             int bytesInGroup = charsInGroup - 1;
             if (bytesInGroup > 0)
             {
-                // Extract bytes from the base-64 value (most significant byte first)
+                if (written + bytesInGroup > destination.Length)
+                    throw new ArgumentException("Tiger decode buffer is too small", nameof(destination));
                 for (int i = bytesInGroup - 1; i >= 0; i--)
-                    result.Add((byte)((value >> (i * 8)) & 0xFF));
+                    destination[written++] = (byte)((value >> (i * 8)) & 0xFF);
             }
         }
 
-        return result.ToArray();
+        return written;
     }
 
     /// <summary>Encode binary bytes to Tiger-encrypted base64 string.</summary>
@@ -114,10 +129,53 @@ public static class TigerCodec
     }
 
     /// <summary>Rotate BASE_KEY by offset.</summary>
-    private static string GetRotatedKey(uint offset)
+    internal static string GetRotatedKey(uint offset)
     {
-        if (offset == 0) return BASE_KEY;
-        int rot = (int)(offset % 63);
-        return BASE_KEY.Substring(rot) + BASE_KEY.Substring(0, rot);
+        return RotatedKeys[offset % 63];
+    }
+
+    private static int DecodeChars(ReadOnlySpan<char> tigerData, uint keyOffset, Span<byte> destination)
+    {
+        string keyStr = GetRotatedKey(keyOffset);
+        int pos = 0;
+        int written = 0;
+
+        while (pos < tigerData.Length)
+        {
+            long value = 0;
+            int charsInGroup = 0;
+
+            for (int i = 0; i < 4 && pos < tigerData.Length; i++)
+            {
+                char c = tigerData[pos];
+                if (c == '=') { pos++; break; }
+                int idx = keyStr.IndexOf(c);
+                if (idx < 0)
+                    throw new FormatException($"Invalid Tiger base64 char: '{c}' (0x{(int)c:X2}) at position {pos}");
+                value = value * 64 + idx;
+                charsInGroup++;
+                pos++;
+            }
+
+            int bytesInGroup = charsInGroup - 1;
+            if (bytesInGroup > 0)
+            {
+                if (written + bytesInGroup > destination.Length)
+                    throw new ArgumentException("Tiger decode buffer is too small", nameof(destination));
+                for (int i = bytesInGroup - 1; i >= 0; i--)
+                    destination[written++] = (byte)((value >> (i * 8)) & 0xFF);
+            }
+        }
+
+        return written;
+    }
+
+    private static string[] CreateRotatedKeys()
+    {
+        var keys = new string[63];
+        keys[0] = BASE_KEY;
+        for (int rot = 1; rot < keys.Length; rot++)
+            keys[rot] = BASE_KEY.Substring(rot) + BASE_KEY.Substring(0, rot);
+        return keys;
     }
 }

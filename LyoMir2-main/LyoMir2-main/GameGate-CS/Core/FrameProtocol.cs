@@ -50,10 +50,13 @@ public class FrameParser
     private byte _currentCmd;
     private ushort _currentDataLen;
     private uint _currentIdent;
+    // Callers must consume the returned list before the next Feed.
+    private readonly List<(byte flags, byte cmd, uint ident, byte[] payload)> _frames = new();
 
     public List<(byte flags, byte cmd, uint ident, byte[] payload)> Feed(byte[] data, int offset, int length)
     {
-        var frames = new List<(byte, byte, uint, byte[])>();
+        var frames = _frames;
+        frames.Clear();
 
         // Compact if needed
         if (_processed > 65536)

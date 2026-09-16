@@ -216,6 +216,9 @@ foreach (var implementedFile in new[]
              // resolves sub_652784's non-ghost ReadyRun player, then invokes
              // vtbl+0x84 Die(). Missing targets and all successful paths are silent.
              "DieCommand.cs",
+             // case 62 @0x00624290 -> sub_6BF260: default 10s mute via
+             // NativeMirrorChatBan.Add, ident 209 replication, no GM SysMsg.
+             "ShutupCommand.cs",
              // case 476 @0x006291EF brackets sub_67DC40 with two exact green
              // messages. The core walks the active scripted-monster list and
              // sub_71F240 replaces each existing script instance from the same path.
@@ -741,8 +744,13 @@ var shutup = Read("ShutupCommand.cs");
 Assert(shutup.Contains("HUtil32.Str_ToInt(sTime, 10)", StringComparison.Ordinal) &&
        shutup.Contains("NativeMirrorChatBan.Add", StringComparison.Ordinal) &&
        shutup.Contains("ISM_CHATPROHIBITION", StringComparison.Ordinal) &&
-       shutup.Contains("MsgColor.Green", StringComparison.Ordinal),
-    "OutSay does not preserve the native 10-second default/add/209/green contract");
+       shutup.Contains("SendServerGroupMsg", StringComparison.Ordinal) &&
+       !shutup.Contains(".SysMsg(", StringComparison.Ordinal) &&
+       !shutup.Contains("MsgColor.", StringComparison.Ordinal) &&
+       !shutup.Contains("g_sGameCommandParamUnKnow", StringComparison.Ordinal) &&
+       !shutup.Contains("g_sGameCommandShutupHumanMsg", StringComparison.Ordinal) &&
+       !shutup.Contains("禁止聊天", StringComparison.Ordinal),
+    "OutSay does not preserve the native 10-second default/add/209 silent contract");
 
 var shutupRelease = Read("ShutupReleaseCommand.cs");
 Assert(shutupRelease.Contains("NativeMirrorChatBan.Remove", StringComparison.Ordinal) &&
@@ -762,9 +770,6 @@ Assert(shutupList.Contains("禁言名单为：\\r", StringComparison.Ordinal) &&
 
 var m2Share = File.ReadAllText(Path.Combine(root, "GameSvr", "M2Share.cs"));
 Assert(m2Share.Contains(
-           "g_sGameCommandShutupHumanMsg = \"{0} 禁止聊天：{1}秒\"",
-           StringComparison.Ordinal) &&
-       m2Share.Contains(
            "g_sGameCommandShutupReleaseHumanCanSendMsg = \"解除禁言成功！\"",
            StringComparison.Ordinal),
     "native mute command text literals drifted");

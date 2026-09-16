@@ -27,7 +27,13 @@ namespace GameSvr
                     {
                         BaseObject.StruckDamage(n10, this);
                         BaseObject.SendDelayMsg(Grobal2.RM_STRUCK, Grobal2.RM_10101, (short)n10, BaseObject.m_WAbil.HP, BaseObject.m_WAbil.MaxHP, ObjectId, "", 300);
-                        if (M2Share.RandomNumber.Random(BaseObject.m_btAntiPoison + 20) == 0)
+                        // POIS-36/37 @0x666D2F / @0x6670AB: movzx eax,word [target+0x26C];
+                        // add eax,0x14; call Random; test eax,eax / jne skip => only ==0
+                        // passes. +0x26C is m_wEffectResistance (IceDoor @0x674C12 /
+                        // Attack.cs POIS-36), not the byte projection m_btAntiPoison.
+                        // MagGroupAmyounsul stays on the legacy byte: native wMagicID 48
+                        // calls sub_76FBBC, unmapped. Keep POISON_STONE 5s/level 0.
+                        if (M2Share.RandomNumber.Random(BaseObject.m_wEffectResistance + 20) == 0)
                         {
                             BaseObject.MakePosion(Grobal2.POISON_STONE, 5, 0);
                         }

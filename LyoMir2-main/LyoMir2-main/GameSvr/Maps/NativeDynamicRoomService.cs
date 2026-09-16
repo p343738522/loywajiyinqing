@@ -266,7 +266,9 @@ namespace GameSvr
             string roomName, int roomIndex)
         {
             if (caller == null) return false;
-            var groupLeader = caller.m_GroupOwner ?? caller;
+            // Native sub_6E06D8: [self+0xA80]==0 -> silent no-op; else sub_727884.
+            // C# folds TGroup into the leader, so m_GroupOwner null == no group.
+            var groupLeader = caller.m_GroupOwner;
             if (groupLeader == null) return true;
             var sourceEnvironment = groupLeader.m_PEnvir;
             if (sourceEnvironment == null) return true;

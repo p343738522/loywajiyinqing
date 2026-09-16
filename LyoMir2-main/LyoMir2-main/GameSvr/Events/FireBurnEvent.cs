@@ -108,13 +108,39 @@ namespace GameSvr
             return false;
         }
 
+        // Run pulses on the event thread; keep a per-thread stack rather than
+        // allocating a scan list every interval.
+        [ThreadStatic]
+        private static Stack<List<TBaseObject>> _fireScanPool;
+
+        private static List<TBaseObject> RentFireScanList()
+        {
+            var pool = _fireScanPool ??= new Stack<List<TBaseObject>>();
+            if (pool.Count > 0)
+            {
+                var list = pool.Pop();
+                list.Clear();
+                return list;
+            }
+            return new List<TBaseObject>(32);
+        }
+
+        private static void ReturnFireScanList(IList<TBaseObject> list)
+        {
+            if (list is not List<TBaseObject> concrete) return;
+            concrete.Clear();
+            (_fireScanPool ??= new Stack<List<TBaseObject>>()).Push(concrete);
+        }
+
         public override void Run(int currentTick)
         {
             if (unchecked((uint)(currentTick - m_fireRunTick)) >
                 unchecked((uint)m_fireRunInterval))
             {
                 m_fireRunTick = currentTick;
-                IList<TBaseObject> BaseObjectList = new List<TBaseObject>();
+                IList<TBaseObject> BaseObjectList = RentFireScanList();
+                try
+                {
                 if (m_Envir != null)
                 {
                     m_Envir.GetBaseObjects(m_nX, m_nY, true, BaseObjectList);
@@ -123,8 +149,11 @@ namespace GameSvr
                         ApplyTo(BaseObjectList[i]);
                     }
                 }
-                BaseObjectList.Clear();
-                BaseObjectList = null;
+                }
+                finally
+                {
+                    ReturnFireScanList(BaseObjectList);
+                }
             }
             base.Run(currentTick);
         }

@@ -545,6 +545,12 @@ static void CheckWiringAndResolvedLegs()
 
     Before(baseSource, "SendMsg(this, Grobal2.RM_NATIVE_LOGON_STATE_SYNC, 0, 0, 0, 0, \"\");",
         "SendDefMessage(Grobal2.SM_LOGIN_VER", "UserLogon enqueue before SM 888");
+    Before(userLogon, "SendNativeLoginNow();", "SendSafeZoneInfo();",
+        "sub_6F05D8 SM 889 before SM 4230");
+    Before(userLogon, "SendSafeZoneInfo();", "ReplayNativeFixedCoordOnLogon();",
+        "sub_6F05D8 SM 4230 before 定位石 replay");
+    Equal(1, Count(userLogon, "SendSafeZoneInfo();"),
+        "UserLogon sends SM 4230 exactly once");
 
     var message = File.ReadAllText(Path.Combine(root, "GameSvr", "Players",
         "TPlayObject.Message.cs"));
